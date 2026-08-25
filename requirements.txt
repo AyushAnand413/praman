@@ -1,0 +1,31 @@
+# The money rail, the ledger, and the HTTP surface.
+fastapi>=0.115
+uvicorn[standard]>=0.30
+httpx>=0.27
+pytest>=8.0
+
+# The bounds and the gates require 100% line coverage, which is a claim that
+# has to be measured rather than asserted:
+#   python -m pytest --cov=kernel.bounds --cov=kernel.gates --cov-report=term-missing
+pytest-cov>=5.0
+
+# Mandate signing (ed25519).
+pynacl>=1.5
+
+# The LLM client. Optional at runtime and imported lazily: without it, and
+# without GEMINI_API_KEY, the offer path still works and serves the deterministic
+# base-item-only offer. The whole test suite runs with neither.
+google-genai>=1.0
+
+# The MCP server, so an agent that speaks Model Context Protocol can transact
+# without an HTTP integration written for this store specifically. A thin wrapper
+# over the same endpoints, sharing their validation rather than repeating it.
+mcp>=1.9
+
+# Deliberately absent:
+#   razorpay      — kernel/payments.py talks to the REST API over httpx, which
+#                   keeps credentials inside settings.Secret until the exact
+#                   line that builds the auth header.
+#   python-dotenv — secrets come from the environment only.
+#                   .env is a local-dev convenience loaded by the shell, not
+#                   something the app reads for itself.

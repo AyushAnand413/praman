@@ -1,0 +1,37 @@
+# Secrets — env vars only (plan.md §15). Never commit these.
+.env
+.env.*
+!.env.example
+
+# Runtime data: the SQLite database, WAL sidecars, generated checkout pages.
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.tmp/
+.tmp.pytest_cache/
+.ruff_cache/
+*.egg-info/
+.coverage
+htmlcov/
+
+# Local tooling — session notes, Claude settings, launcher script.
+.claude/
+start-claude.bat
+
+# Planning docs — kept local, not part of the shipped code.
+plan.md
+idea.md
+BAZAAR_BUILD_PHASES.md
+
+# Dashboard (Phase 4)
+node_modules/
+.next/
+.vercel/
