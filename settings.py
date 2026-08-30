@@ -36,6 +36,12 @@ CATALOG_PATH = Path(os.environ.get("CATALOG_PATH") or BASE_DIR / "catalog.json")
 # store layer, not here.
 DATABASE_PATH = Path(os.environ.get("DATABASE_PATH") or DATA_DIR / "bazaar.db")
 
+# Postgres URL for serverless. When set, store/db.py uses psycopg2 instead of
+# sqlite3. Leave unset for local dev and tests — they stay on SQLite and need
+# no env. Example: postgresql://user:pass@host:5432/db?sslmode=require
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
+USE_POSTGRES = DATABASE_URL.startswith("postgresql://")
+
 
 # ---------------------------------------------------------------------------
 # POLICY_MODE
