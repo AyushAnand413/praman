@@ -52,13 +52,17 @@ def _llm_reply(base_sku: str, *, qty: int = 1, discount_pct=0) -> str:
     """A response shaped exactly as RESPONSE_SCHEMA declares."""
     return json.dumps(
         {
-            "base": {
-                "sku": base_sku,
-                "qty": qty,
-                "discount_pct": discount_pct,
-                "why": "Solid battery life for a full commute.",
-            },
-            "proposed_upsells": [],
+            "candidates": [
+                {
+                    "base": {
+                        "sku": base_sku,
+                        "qty": qty,
+                        "discount_pct": discount_pct,
+                        "why": "Solid battery life for a full commute.",
+                    },
+                    "proposed_upsells": [],
+                }
+            ]
         }
     )
 
@@ -88,7 +92,7 @@ def test_a_well_formed_answer_is_used_on_the_first_attempt(stocky):
     assert outcome.attempts == 1
     assert len(calls) == 1
     assert not outcome.refused
-    assert outcome.proposal.base.sku == sellable.sku
+    assert outcome.candidates[0].base.sku == sellable.sku
     assert outcome.from_model
 
 
@@ -107,14 +111,18 @@ def test_a_malformed_answer_is_retried_once_with_the_field_named(stocky):
             seen_notes.append(user)
             return json.dumps(
                 {
-                    "base": {
-                        "sku": sellable.sku,
-                        "qty": 1,
-                        "discount_pct": 0,
-                        "why": "fine",
-                        "final_price_inr": 999,
-                    },
-                    "proposed_upsells": [],
+                    "candidates": [
+                        {
+                            "base": {
+                                "sku": sellable.sku,
+                                "qty": 1,
+                                "discount_pct": 0,
+                                "why": "fine",
+                                "final_price_inr": 999,
+                            },
+                            "proposed_upsells": [],
+                        }
+                    ]
                 }
             )
         assert "final_price_inr" in user, "retry must name the offending field"
@@ -141,7 +149,7 @@ def test_two_malformed_answers_fall_back_to_the_deterministic_offer(stocky):
     assert calls == [1, 1]
     assert outcome.source == proposer.SOURCE_FALLBACK
     assert outcome.attempts == 2
-    assert outcome.proposal.base.qty == 1
+    assert outcome.candidates[0].base.qty == 1
 
 
 def test_a_model_that_never_answers_falls_back_after_one_attempt(stocky):
@@ -182,7 +190,7 @@ def test_the_fallback_sells_list_price_with_no_upsell_and_no_discount(stocky):
 
     outcome = proposer.propose(_request(base_sku=sellable.sku), env, generate=None)
 
-    proposal = outcome.proposal
+    proposal = outcome.candidates[0]
     assert isinstance(proposal, Proposal)
     assert proposal.upsells == ()
     assert proposal.base.discount_pct == Decimal(0)
@@ -195,7 +203,7 @@ def test_the_fallback_honours_a_named_in_stock_sku(stocky):
 
     outcome = proposer.propose(_request(base_sku=sellable.sku), stocky[0], generate=None)
 
-    assert outcome.proposal.base.sku == sellable.sku
+    assert outcome.candidates[0].base.sku == sellable.sku
 
 
 def test_a_named_sku_without_stock_is_not_quietly_substituted(db):
@@ -208,8 +216,8 @@ def test_a_named_sku_without_stock_is_not_quietly_substituted(db):
     )
 
     # The named SKU cannot ship, so pick_base chooses on the stated need instead.
-    assert outcome.proposal.base.sku != scarce.sku
-    assert outcome.proposal.base.discount_pct == Decimal(0)
+    assert outcome.candidates[0].base.sku != scarce.sku
+    assert outcome.candidates[0].base.discount_pct == Decimal(0)
 
 
 def test_nothing_fitting_the_request_is_a_refusal_not_an_empty_offer(db):
@@ -220,7 +228,7 @@ def test_nothing_fitting_the_request_is_a_refusal_not_an_empty_offer(db):
     outcome = proposer.propose(_request(qty=largest_stock + 1), env, generate=None)
 
     assert outcome.refused
-    assert outcome.proposal is None
+    assert len(outcome.candidates) == 0
 
 
 # ── the schema does not pre-filter policy ─────────────────────────────────────
@@ -235,6 +243,6 @@ def test_a_ninety_percent_discount_parses_cleanly_and_reaches_the_kernel(stocky)
     from vyapaari.schema import parse
 
     _, sellable = stocky
-    proposal = parse(_llm_reply(sellable.sku, discount_pct=90))
+    candidates = parse(_llm_reply(sellable.sku, discount_pct=90))
 
-    assert proposal.base.discount_pct == Decimal("90")
+    assert candidates[0].base.discount_pct == Decimal("90")

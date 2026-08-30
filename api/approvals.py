@@ -65,31 +65,35 @@ class CounterDecision(BaseModel):
     note: str | None = None
 
 
-def _require_merchant(presented: str | None) -> None:
-    """Gate the merchant routes on the demo key.
-
-    Constant-time comparison, and a missing configured key is a 503 rather than an
-    open door: failing closed on a misconfiguration is the only safe direction for
-    an endpoint that can release money.
-    """
+def _require_merchant(presented: str | None, authorization: str | None = None) -> None:
+    """Gate the merchant routes. Accepts Bearer token (new auth) or DEMO_KEY (demo fallback)."""
+    # New auth first: Bearer token from merchants table
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization.removeprefix("Bearer ").strip()
+        try:
+            from store.auth import get_by_token
+            if token and get_by_token(token):
+                return
+        except Exception:
+            pass
+    # Fallback to demo key
     try:
         expected = secret("DEMO_KEY").reveal()
     except Exception as exc:
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "code": "merchant_auth_unconfigured",
-                "message": (
-                    "DEMO_KEY is not set, so merchant routes cannot authenticate a "
-                    "caller and refuse to serve rather than serve everyone"
-                ),
-            },
-        ) from exc
+        # No DEMO_KEY and no Bearer — if merchants exist, require Bearer
+        try:
+            from store.db import get_connection
+            row = get_connection().execute("SELECT 1 FROM merchants LIMIT 1").fetchone()
+            if row:
+                raise HTTPException(status_code=401, detail={"code": "unauthorized", "message": "sign in required"}) from exc
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+        raise HTTPException(status_code=503, detail={"code": "merchant_auth_unconfigured", "message": "DEMO_KEY is not set"}) from exc
     if not presented or not hmac.compare_digest(presented, expected):
-        raise HTTPException(
-            status_code=401,
-            detail={"code": "unauthorized", "message": "valid X-Merchant-Key required"},
-        )
+        # Also try Bearer already checked above
+        raise HTTPException(status_code=401, detail={"code": "unauthorized", "message": "valid X-Merchant-Key or Bearer token required"})
 
 
 def _handle(call) -> dict[str, Any]:
@@ -104,6 +108,11 @@ def _handle(call) -> dict[str, Any]:
         raise HTTPException(
             status_code=409, detail={"code": "already_decided", "message": str(exc)}
         ) from exc
+    except checkout_kernel.OversoldFault as exc:
+        # The approval released the order, the payment captured, and the stock
+        # was gone. The saga already refunded; the merchant sees exactly what
+        # the buyer was told, plus the same audit link.
+        raise HTTPException(status_code=exc.http_status, detail=exc.payload) from exc
     except checkout_kernel.CheckoutError as exc:
         raise HTTPException(
             status_code=exc.http_status, detail={"code": exc.code, "message": str(exc)}
@@ -113,8 +122,9 @@ def _handle(call) -> dict[str, Any]:
 @router.get("/approvals", summary="Orders waiting on a human")
 def queue(
     merchant_key: str | None = Header(default=None, alias="X-Merchant-Key"),
+    authorization: str | None = Header(default=None, alias="Authorization"),
 ) -> dict[str, Any]:
-    _require_merchant(merchant_key)
+    _require_merchant(merchant_key, authorization)
     pending = approvals_kernel.pending_queue()
     return {
         "pending_count": len(pending),
@@ -131,8 +141,9 @@ def approve(
     approval_id: str,
     body: Decision | None = None,
     merchant_key: str | None = Header(default=None, alias="X-Merchant-Key"),
+    authorization: str | None = Header(default=None, alias="Authorization"),
 ) -> dict[str, Any]:
-    _require_merchant(merchant_key)
+    _require_merchant(merchant_key, authorization)
     decision = body or Decision()
     return _handle(
         lambda: approvals_kernel.approve(
@@ -149,8 +160,9 @@ def reject(
     approval_id: str,
     body: Decision | None = None,
     merchant_key: str | None = Header(default=None, alias="X-Merchant-Key"),
+    authorization: str | None = Header(default=None, alias="Authorization"),
 ) -> dict[str, Any]:
-    _require_merchant(merchant_key)
+    _require_merchant(merchant_key, authorization)
     decision = body or Decision()
     return _handle(
         lambda: approvals_kernel.reject(
@@ -164,8 +176,9 @@ def counter(
     approval_id: str,
     body: CounterDecision,
     merchant_key: str | None = Header(default=None, alias="X-Merchant-Key"),
+    authorization: str | None = Header(default=None, alias="Authorization"),
 ) -> dict[str, Any]:
-    _require_merchant(merchant_key)
+    _require_merchant(merchant_key, authorization)
     return _handle(
         lambda: approvals_kernel.counter(
             approval_id,

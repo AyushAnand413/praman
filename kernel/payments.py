@@ -79,7 +79,7 @@ def verify_webhook_signature(body: bytes, signature: str | None) -> bool:
     Lives here because this is the module that holds Razorpay credentials, and
     the webhook secret is one of them.
     """
-    if not signature:
+    if not signature or not signature.strip():
         return False
     expected = hmac.new(
         secret("RAZORPAY_WEBHOOK_SECRET").reveal().encode("utf-8"),

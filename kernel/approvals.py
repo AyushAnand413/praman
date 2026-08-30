@@ -57,6 +57,7 @@ from kernel.checkout import (
 )
 from kernel.gates import assign_tier
 from kernel.payments import RazorpayClient
+from kernel.relations import related_by_base_for_items
 from store import approvals as approvals_store
 from store import ids, ledger, offers, orders, sessions
 from store.timestamps import plus_seconds, to_ts, utc_now
@@ -581,6 +582,7 @@ def counter(
         offers_made=0,
         spent_today_inr=budgets.spent(),
         now=moment,
+        related_by_base=related_by_base_for_items(counter_items),
     )
     if evaluation.offer_failed:
         raise ApprovalError(
@@ -613,6 +615,7 @@ def counter(
         state=approvals_store.COUNTERED,
         decided_by=decided_by,
         counter_amount_inr=counter_amount_inr,
+        counter_offer_id=counter_offer_id,
         note=note,
     )
     orders.transition(order_id, orders.VOIDED, expect=orders.HELD)
@@ -852,6 +855,13 @@ def order_status(order_id: str) -> dict[str, Any]:
             body["detail"] = (
                 "waiting on a merchant decision. No timeout approves this order."
             )
+        elif approval["state"] == approvals_store.COUNTERED:
+            # The counter is a real, bounded, signed offer the agent can
+            # accept explicitly — surface it so polling is all a buyer agent
+            # needs to complete the negotiation without a human relay.
+            body["status"] = approval["state"].lower()
+            body["counter_offer_id"] = approval["counter_offer_id"]
+            body["counter_amount_inr"] = approval["counter_amount_inr"]
         else:
             body["status"] = approval["state"].lower()
     else:

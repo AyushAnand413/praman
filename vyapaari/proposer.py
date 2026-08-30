@@ -25,7 +25,7 @@ unnoticed until the day it mattered.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Callable, Protocol, Sequence
 
@@ -36,11 +36,13 @@ from vyapaari.envelope import SellableSku
 from vyapaari.gemini import GeminiClient, LLMUnavailable, is_configured
 from vyapaari.prompt import ProposalRequest
 from vyapaari.schema import RESPONSE_SCHEMA, Proposal, ProposedItem, SchemaError, parse
+from vyapaari.tools import ExplorationTools
 
 #: Where a proposal came from. Recorded in the ledger, so an audit can tell a
 #: model's offer from the engine's without re-running anything.
 SOURCE_LLM = "llm"
 SOURCE_LLM_RETRY = "llm_retry"
+SOURCE_LLM_AGENT = "llm_agent"
 SOURCE_FALLBACK = "fallback"
 
 #: The `why` on a fallback line. Written here, by hand, because the fallback path
@@ -69,25 +71,31 @@ class Generator(Protocol):
 class ProposalOutcome:
     """What came back, and how much it cost to get it.
 
-    `proposal` is None only when nothing in the catalog can satisfy the request —
+    `candidates` is empty only when nothing in the catalog can satisfy the request -
     wrong category, over budget, out of stock. The caller must treat that as a
     refusal and not as an empty offer.
+
+    `exploration` is the tool-call trail of an agentic run: every search and
+    pairing lookup the model made before committing to a proposal. It travels
+    into the ledger so an audit can replay not just what was offered but how
+    the offer was reasoned toward. Empty for one-shot runs.
     """
 
-    proposal: Proposal | None
+    candidates: tuple[Proposal, ...]
     source: str
     attempts: int
     latency_ms: int
     errors: tuple[str, ...] = ()
     model: str | None = None
+    exploration: tuple[dict[str, Any], ...] = ()
 
     @property
     def refused(self) -> bool:
-        return self.proposal is None
+        return len(self.candidates) == 0
 
     @property
     def from_model(self) -> bool:
-        return self.source in (SOURCE_LLM, SOURCE_LLM_RETRY)
+        return self.source in (SOURCE_LLM, SOURCE_LLM_RETRY, SOURCE_LLM_AGENT)
 
     def as_payload(self) -> dict[str, Any]:
         """The outcome as a ledger entry.
@@ -101,20 +109,22 @@ class ProposalOutcome:
             "source": self.source,
             "attempts": self.attempts,
             "latency_ms": self.latency_ms,
-            "upsells": 0 if self.proposal is None else len(self.proposal.upsells),
+            "candidates_count": len(self.candidates),
         }
         if self.model:
             body["model"] = self.model
         if self.errors:
             body["schema_errors"] = list(self.errors)
-        if self.proposal is not None:
-            body["proposal"] = self.proposal.as_payload()
+        if self.exploration:
+            body["exploration"] = [dict(step) for step in self.exploration]
+        if self.candidates:
+            body["candidates"] = [c.as_payload() for c in self.candidates]
         return body
 
 
 def _fallback_proposal(
     request: ProposalRequest, envelope: Sequence[SellableSku]
-) -> Proposal | None:
+) -> tuple[Proposal, ...]:
     """A base item at list price, chosen by rule.
 
     No upsells and no discount. An upsell is a judgement call about what pairs
@@ -140,15 +150,17 @@ def _fallback_proposal(
             qty=request.qty,
         )
     if chosen is None:
-        return None
-    return Proposal(
-        base=ProposedItem(
-            sku=chosen.sku,
-            qty=request.qty,
-            discount_pct=Decimal(0),
-            why=_FALLBACK_WHY,
+        return ()
+    return (
+        Proposal(
+            base=ProposedItem(
+                sku=chosen.sku,
+                qty=request.qty,
+                discount_pct=Decimal(0),
+                why=_FALLBACK_WHY,
+            ),
+            upsells=(),
         ),
-        upsells=(),
     )
 
 
@@ -160,6 +172,206 @@ def _default_generator() -> tuple[Generator | None, str | None, str | None]:
     return client.generate, client.model, None
 
 
+# ---------------------------------------------------------------------------
+# The agentic path: explore with tools, then propose
+# ---------------------------------------------------------------------------
+
+#: The tool protocol. Text-JSON rather than provider-native function calling,
+#: deliberately: the Generator seam is "text in, text out", so a protocol that
+#: rides on text works with any model behind it and stays testable with a
+#: scripted fake. The strictness comes from parsing, not from the wire format.
+AGENT_SYSTEM_ADDENDUM = """
+
+EXPLORATION PROTOCOL
+
+Before proposing, you may investigate the catalog by replying with an ACTION
+object instead of a proposal:
+
+  {"action": "search_catalog", "query": "<words to search for>"}
+  {"action": "get_pairings", "sku": "<a SKU from the catalog>"}
+
+You will receive a TOOL RESULT message and may act again. Actions are limited;
+spend them on what would change the proposal: verifying an accessory exists,
+checking what buyers of the base item usually take.
+
+When you are ready — or when actions run out — reply with the proposal JSON
+exactly as specified before. A proposal is always acceptable, at any turn.
+Propose only SKUs returned by a tool result. Never invent one.
+"""
+
+
+def _parse_action(raw: str) -> dict[str, Any] | None:
+    """A well-formed action object, or None if the reply is not one.
+
+    Deliberately stricter than the schema parser's bracket-hunting: an action
+    must be exactly an object with an action key, so prose around it fails
+    here instead of executing something half-read.
+    """
+    import json
+
+    text = raw.strip()
+    try:
+        decoded = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(decoded, dict):
+        return None
+    action = decoded.get("action")
+    if action == "search_catalog" and isinstance(decoded.get("query"), str):
+        return {"action": action, "query": decoded["query"].strip()}
+    if action == "get_pairings" and isinstance(decoded.get("sku"), str):
+        return {"action": action, "sku": decoded["sku"].strip()}
+    return None
+
+
+class _ExplorationSession:
+    """One agent's transcript, budget, and trail."""
+
+    def __init__(self, tools: ExplorationTools) -> None:
+        self._tools = tools
+        self.transcript: list[str] = []
+        self.steps: list[dict[str, Any]] = []
+        self.errors: list[str] = []
+
+    def run_action(self, action: dict[str, Any]) -> dict[str, Any]:
+        """Execute one parsed action and record both sides of it."""
+        kind = action["action"]
+        if kind == "search_catalog":
+            query = action["query"]
+            results = self._tools.search_catalog(query)
+            outcome = {"action": kind, "query": query, "results": results}
+        else:
+            sku = action["sku"]
+            pairs = self._tools.get_pairings(sku)
+            outcome = {"action": kind, "sku": sku, "pairs": pairs}
+        self.steps.append(outcome)
+        return outcome
+
+    @staticmethod
+    def _render(outcome: dict[str, Any]) -> str:
+        import json
+
+        return json.dumps(
+            {"tool_result": outcome}, sort_keys=True, separators=(",", ":")
+        )
+
+    def note_result(self, outcome: dict[str, Any]) -> None:
+        self.transcript.append(f"TOOL RESULT\n{self._render(outcome)}")
+
+    def note_error(self, message: str) -> None:
+        self.errors.append(message)
+        self.transcript.append(
+            f"SYSTEM NOTE\n{message} Reply with an ACTION object or the "
+            "proposal JSON."
+        )
+
+
+def _agent_user_block(request: ProposalRequest, session: _ExplorationSession) -> str:
+    """The running user message: task, then the conversation so far."""
+    parts = [
+        prompt_module.build(request, []).user,  # constraints + fenced need
+        "",
+        f"You have used {len(session.steps)} of "
+        f"{settings.AGENT_MAX_TOOL_CALLS} allowed actions.",
+    ]
+    parts.extend(session.transcript)
+    parts.append("")
+    parts.append("Reply now with ONE JSON object: an ACTION, or the proposal.")
+    return "\n".join(parts)
+
+
+def propose_with_tools(
+    request: ProposalRequest,
+    envelope: Sequence[SellableSku],
+    tools: ExplorationTools,
+    *,
+    generate: Generator,
+    model: str | None = None,
+    clock: Callable[[], float] = time.perf_counter,
+) -> ProposalOutcome | None:
+    """Explore with tools under hard caps, then propose.
+
+    Returns None whenever the exploration cannot produce a usable proposal —
+    out of budget, over the wall clock, transport dead — and the caller falls
+    back to the ordinary ladder. Falling back is the contract; this function is
+    an optimisation in front of a proven path, never a replacement for it.
+
+    Every model turn is one `generate` call whose output is either a strict
+    action object (executed against the tools) or a proposal (parsed by the
+    same schema as the one-shot path). Malformed turns consume the loop's
+    budget and are named to the model, but nothing here retries forever: the
+    caps exist precisely because misbehaviour is assumed.
+    """
+    started = clock()
+    session = _ExplorationSession(tools)
+    deadline = started + settings.AGENT_WALL_CLOCK_SECONDS
+
+    def elapsed_ms() -> int:
+        return int((clock() - started) * 1000)
+
+    system = (
+        prompt_module.SYSTEM_INSTRUCTION.replace(
+            "Use only SKUs that appear in the catalog block. Never invent one.",
+            "Propose only SKUs that appeared in a TOOL RESULT. Never invent one.",
+        )
+        + AGENT_SYSTEM_ADDENDUM
+    )
+    settings.assert_no_secrets_in_prompt(system)
+
+    while len(session.steps) < settings.AGENT_MAX_TOOL_CALLS:
+        if clock() > deadline:
+            session.note_error("exploration ran out of time")
+            break
+        try:
+            built_user = _agent_user_block(request, session)
+            settings.assert_no_secrets_in_prompt(built_user)
+            raw = generate(system=system, user=built_user, response_schema=RESPONSE_SCHEMA)
+        except LLMUnavailable as exc:
+            session.errors.append(str(exc))
+            break
+
+        # A proposal ends the exploration successfully.
+        try:
+            candidates = parse(raw)
+            return ProposalOutcome(
+                candidates=candidates,
+                source=SOURCE_LLM_AGENT,
+                attempts=len(session.steps) + 1,
+                latency_ms=elapsed_ms(),
+                errors=tuple(session.errors),
+                model=model,
+                exploration=tuple(session.steps),
+            )
+        except SchemaError:
+            pass  # not a proposal - try it as an action below
+
+        action = _parse_action(raw)
+        if action is None:
+            session.note_error(
+                "that reply was neither a valid action nor a valid proposal"
+            )
+            continue
+
+        session.run_action(action)
+        session.note_result(session.steps[-1])
+
+    # Budget exhausted without a proposal: report honestly and let the caller
+    # fall back. The trail survives into whatever happens next.
+    session.errors.append(
+        "exploration ended without a proposal; falling back to the "
+        "deterministic offer"
+    )
+    return ProposalOutcome(
+        candidates=(),
+        source=SOURCE_LLM_AGENT,
+        attempts=len(session.steps),
+        latency_ms=elapsed_ms(),
+        errors=tuple(session.errors),
+        model=model,
+        exploration=tuple(session.steps),
+    )
+
+
 def propose(
     request: ProposalRequest,
     envelope: Sequence[SellableSku],
@@ -167,12 +379,19 @@ def propose(
     generate: Generator | None = None,
     model: str | None = None,
     clock: Callable[[], float] = time.perf_counter,
+    tools: ExplorationTools | None = None,
 ) -> ProposalOutcome:
     """Ask the model for a proposal; guarantee something usable comes back.
 
     `generate` is injectable so the retry and fallback paths can be tested without
     a network, and so a caller that already holds a warm client does not build a
     second one per request.
+
+    When `tools` is supplied and the agent path is enabled, the model first gets
+    a bounded exploration phase (search the catalog, read learned pairings)
+    before proposing. Every failure mode of that phase — dead transport, spent
+    budget, malformed turns — degrades into the one-shot ladder below, which is
+    the same proven behaviour this system shipped with.
     """
     started = clock()
     errors: list[str] = []
@@ -188,6 +407,27 @@ def propose(
     def elapsed_ms() -> int:
         return int((clock() - started) * 1000)
 
+    if (
+        generate is not None
+        and tools is not None
+        and settings.PROPOSER_TOOLS_ENABLED
+    ):
+        agentic = propose_with_tools(
+            request,
+            envelope,
+            tools,
+            generate=generate,
+            model=model,
+            clock=clock,
+        )
+        if agentic is not None and not agentic.refused:
+            return agentic
+        if agentic is not None:
+            # The exploration spent its budget without proposing. Keep its
+            # trail and errors visible in whatever outcome follows.
+            errors.extend(agentic.errors)
+            errors.append("agentic exploration produced no proposal")
+
     if generate is not None:
         repair_note: str | None = None
         while attempts < MAX_ATTEMPTS:
@@ -201,7 +441,7 @@ def propose(
                     user=built.user,
                     response_schema=RESPONSE_SCHEMA,
                 )
-                proposal = parse(raw)
+                candidates = parse(raw)
             except SchemaError as exc:
                 # The one recoverable failure: the model answered, just not in the
                 # agreed shape. Name the field so the retry is a correction rather
@@ -215,8 +455,8 @@ def propose(
                 errors.append(str(exc))
                 break
             return ProposalOutcome(
-                proposal=proposal,
-                source=SOURCE_LLM if attempts == 1 else SOURCE_LLM_RETRY,
+                candidates=candidates,
+                source=SOURCE_LLM_RETRY if attempts > 1 else SOURCE_LLM,
                 attempts=attempts,
                 latency_ms=elapsed_ms(),
                 errors=tuple(errors),
@@ -224,7 +464,7 @@ def propose(
             )
 
     return ProposalOutcome(
-        proposal=_fallback_proposal(request, envelope),
+        candidates=_fallback_proposal(request, envelope),
         source=SOURCE_FALLBACK,
         attempts=attempts,
         latency_ms=elapsed_ms(),

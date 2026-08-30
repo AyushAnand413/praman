@@ -1,4 +1,4 @@
-"""The nine bounds — the kernel's veto surface.
+"""The ten bounds — the kernel's veto surface.
 
 Each bound is an independent pure function: same inputs, same verdict, no
 database, no clock, no network. Every limit they compare against is a named
@@ -25,10 +25,14 @@ A bound on money must not depend on binary floating-point rounding, and a
 discount of exactly 12% must pass a 12% limit every time.
 
 One asymmetry worth naming, because it changes what callers do with the result:
-eight of the nine bounds reject when they fail. Bound 6 — the largest
-transaction allowed without a human — is different. Exceeding it is not an
-error, it is the signal that a human must approve, so it reports as tripped and
-the gate turns that into a hold rather than a refusal.
+bound 6 — the largest transaction allowed without a human — does not reject.
+Exceeding it is not an error, it is the signal that a human must approve, so it
+reports as tripped and the gate turns that into a hold rather than a refusal.
+
+Bound 10 (relatedness) is optional per evaluation: it only runs when the caller
+supplies the related-SKU map (`related_by_base`). The map is built by
+`kernel.relations` from learned pairings plus declared companions; callers that
+do not supply it get the nine original bounds exactly as before.
 """
 
 from __future__ import annotations
@@ -497,6 +501,36 @@ def check_idempotency_key(*, key: str | None) -> BoundResult:
     )
 
 
+def check_relatedness(
+    *, sku: str, base_sku: str, related_skus: frozenset[str] | set[str]
+) -> BoundResult:
+    """Bound 10 — an upsell must relate to what it accompanies.
+
+    Pure membership: the caller supplies the related-SKU set (learned pairings,
+    declared companions — see `kernel.relations`), and this bound answers one
+    question. It knows nothing about where the set came from, which is what
+    keeps it a bound and not a policy opinion.
+
+    The observed value is the upsell's SKU; the limit is the size of the
+    trusted set, which is honest about how much evidence stood behind the
+    verdict without leaking any of it.
+    """
+    passed = sku in related_skus
+    return BoundResult(
+        bound=10,
+        passed=passed,
+        observed=sku,
+        limit=len(related_skus),
+        detail=(
+            f"{sku} is a known companion of {base_sku}"
+            if passed
+            else f"{sku} is not known to accompany {base_sku}: no learned "
+            "pairing or declared companion connects them"
+        ),
+        sku=sku,
+    )
+
+
 #: Bound number -> the function that evaluates it. Used by the coverage test to
 #: assert that every declared bound has an implementation and vice versa.
 BOUND_FUNCTIONS = {
@@ -509,6 +543,7 @@ BOUND_FUNCTIONS = {
     7: check_stock_available,
     8: check_offer_fresh,
     9: check_idempotency_key,
+    10: check_relatedness,
 }
 
 
@@ -524,14 +559,20 @@ def evaluate_item(
     explicit_floor_inr: int | None = None,
     sku_max_discount_pct: int | None = None,
     available_qty: int,
+    related_skus: frozenset[str] | set[str] | None = None,
+    base_sku: str | None = None,
 ) -> ItemVerdict:
-    """Run the three per-item bounds (1, 3, 7) against one line.
+    """Run the per-item bounds (1, 3, 7, and optionally 10) against one line.
 
     Every bound runs even after one has failed. A partial evaluation would put
     a second violation in the ledger only once the first was fixed, which turns
     one audit into several.
+
+    Bound 10 runs only when `related_skus` is supplied — the trusted companion
+    set for the cart's base item (`base_sku`). A base item itself never faces
+    relatedness: it is what the buyer asked for.
     """
-    results = (
+    results = [
         check_max_discount_pct_per_sku(
             sku=item.sku,
             list_total_inr=item.list_total_inr,
@@ -547,9 +588,18 @@ def evaluate_item(
         check_stock_available(
             sku=item.sku, requested_qty=item.qty, available_qty=available_qty
         ),
-    )
-    decision = APPROVE if all(r.passed for r in results) else REJECT_ITEM
-    return ItemVerdict(item=item, decision=decision, bounds=results)
+    ]
+    if related_skus is not None and item.role != ROLE_BASE:
+        results.append(
+            check_relatedness(
+                sku=item.sku,
+                base_sku=base_sku or "",
+                related_skus=related_skus,
+            )
+        )
+    verdict_bounds = tuple(results)
+    decision = APPROVE if all(r.passed for r in verdict_bounds) else REJECT_ITEM
+    return ItemVerdict(item=item, decision=decision, bounds=verdict_bounds)
 
 
 @dataclass(frozen=True)
@@ -638,6 +688,7 @@ def evaluate_cart(
     check_session_quota: bool = True,
     check_idempotency: bool = False,
     ttl_seconds: int = OFFER_TTL_SECONDS,
+    related_by_base: dict[str, frozenset[str]] | None = None,
 ) -> CartEvaluation:
     """Evaluate every applicable bound over a whole cart.
 
@@ -646,25 +697,49 @@ def evaluate_cart(
     whose over-discounted upsell was already removed should not also fail the
     cart-discount bound for a line that is no longer being sold.
 
-    The three switches exist because the same function serves both offer time
+    The switches exist because the same function serves both offer time
     and checkout time, and the two moments care about different bounds. Prefer
     `evaluate_offer` and `evaluate_checkout` over calling this directly — they
     set the switches to the combination each flow requires, so a call site cannot
     accidentally skip a bound that mattered.
+
+    Bound 10 activates only when `related_by_base` is supplied (see
+    `kernel.relations`). Omitted — as every pre-bound-10 caller omits it —
+    the evaluation is exactly the original nine.
     """
     if not items:
         raise ValueError("a cart with no items has nothing to bound")
 
-    item_verdicts = tuple(
-        evaluate_item(
-            item,
-            cost_inr=int(private_by_sku[item.sku]["cost_inr"]),
-            explicit_floor_inr=private_by_sku[item.sku].get("floor_price_inr"),
-            sku_max_discount_pct=private_by_sku[item.sku].get("max_discount_pct"),
-            available_qty=int(available_by_sku.get(item.sku, 0)),
+    base_skus = sorted({i.sku for i in items if i.role == ROLE_BASE})
+
+    def _related_for(item: LineItem) -> tuple[frozenset[str] | None, str | None]:
+        if related_by_base is None or item.role == ROLE_BASE:
+            return None, None
+        if not base_skus:
+            return None, None
+        # A cart has one base line in practice; if several ever appear, an
+        # upsell relating to ANY of them is acceptable — strictness here would
+        # reject bundles no human would question.
+        union: frozenset[str] = frozenset()
+        for base in base_skus:
+            union |= frozenset(related_by_base.get(base, frozenset()))
+        return union, base_skus[0]
+
+    item_verdicts = []
+    for item in items:
+        related, anchor = _related_for(item)
+        item_verdicts.append(
+            evaluate_item(
+                item,
+                cost_inr=int(private_by_sku[item.sku]["cost_inr"]),
+                explicit_floor_inr=private_by_sku[item.sku].get("floor_price_inr"),
+                sku_max_discount_pct=private_by_sku[item.sku].get("max_discount_pct"),
+                available_qty=int(available_by_sku.get(item.sku, 0)),
+                related_skus=related,
+                base_sku=anchor,
+            )
         )
-        for item in items
-    )
+    item_verdicts = tuple(item_verdicts)
 
     base_rejected = [
         v for v in item_verdicts if v.item.role == ROLE_BASE and not v.approved
@@ -730,14 +805,17 @@ def evaluate_offer(
     offers_made: int,
     spent_today_inr: int,
     now: datetime,
+    related_by_base: dict[str, frozenset[str]] | None = None,
 ) -> CartEvaluation:
-    """Offer time: eight bounds apply.
+    """Offer time: the bounds that apply to pricing a cart.
 
     The session quota (5) applies because this call is what would consume it.
     Freshness (8) does not — the offer being priced does not exist yet, so there
     is nothing to be stale. Neither does the idempotency key (9), which belongs
     to checkout; requiring one to receive a quote would mean an agent had to
     commit to a purchase before seeing the price.
+
+    Bound 10 runs when `related_by_base` is supplied by the caller.
     """
     return evaluate_cart(
         items,
@@ -750,6 +828,7 @@ def evaluate_offer(
         check_freshness=False,
         check_session_quota=True,
         check_idempotency=False,
+        related_by_base=related_by_base,
     )
 
 
@@ -775,6 +854,14 @@ def evaluate_checkout(
     issued, and charging it twice would refuse the second half of a legitimate
     two-offer session. Freshness (8) and the idempotency key (9) apply here and
     only here.
+
+    Relatedness (10) is also deliberately not re-run here. It is the one bound
+    about the PROPOSAL rather than the money: it fired where proposals are born,
+    and its evidence set moves over time — pairings grow and decay — so a
+    second pass could newly refuse a combination the buyer already accepted.
+    Surprising a buyer at checkout with a refusal reason that did not exist
+    when they said yes is worse than trusting their acceptance moment. Bounds
+    about rupees re-run; the bound about judgement ran once, at birth.
     """
     return evaluate_cart(
         items,

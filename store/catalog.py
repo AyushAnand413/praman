@@ -72,6 +72,15 @@ def to_public(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     attrs = source.get("attrs")
     if isinstance(attrs, str):
         attrs = json.loads(attrs)
+    # attrs is merchant-controlled JSON; sanitize to prevent private economics
+    # leaking via nested keys if a connector or import writes them there.
+    if isinstance(attrs, dict):
+        for _blocked in ("cost_inr", "floor_price_inr", "margin_pct", "max_discount_pct"):
+            if _blocked in attrs:
+                # strip private key rather than raising, so a bad import
+                # does not break the whole catalog read
+                attrs = {k: v for k, v in attrs.items() if k not in ("cost_inr", "floor_price_inr", "margin_pct", "max_discount_pct")}
+                break
     return {
         "sku": source["sku"],
         "title": source["title"],
@@ -136,9 +145,37 @@ def load_catalog_file(path: Path | str | None = None) -> dict[str, Any]:
 def seed_database(path: Path | str | None = None, conn: sqlite3.Connection | None = None) -> int:
     """Load catalog.json into `products` + `product_private`. Idempotent."""
     raw = load_catalog_file(path)
+    return seed_database_from_rows(raw["products"], raw["product_private"], conn=conn)
+
+
+def seed_database_from_rows(
+    public_rows: list[dict[str, Any]],
+    private_rows: list[dict[str, Any]],
+    *,
+    conn: sqlite3.Connection | None = None,
+) -> int:
+    """Upsert catalog rows from dicts — the connector path.
+
+    Same validation and the same upsert as the file loader, so a synced
+    merchant product and a hand-authored one are indistinguishable downstream.
+    Rows that fail validation abort the batch: half-synced catalogs are worse
+    than failed syncs, because a missing SKU refuses honestly while a wrong
+    price sells.
+    """
+    if len(public_rows) != len(private_rows):
+        raise CatalogError(
+            "public/private row counts disagree; refusing to sync a torn catalog"
+        )
+    public_skus = {p["sku"] for p in public_rows}
+    private_skus = {p["sku"] for p in private_rows}
+    if public_skus != private_skus:
+        raise CatalogError(
+            f"public/private SKUs do not join: {sorted(public_skus ^ private_skus)}"
+        )
+
     conn = conn or get_connection()
     with transaction(conn):
-        for product in raw["products"]:
+        for product in public_rows:
             conn.execute(
                 """INSERT INTO products
                        (sku, title, list_price_inr, stock_qty, attrs, category,
@@ -152,9 +189,12 @@ def seed_database(path: Path | str | None = None, conn: sqlite3.Connection | Non
                        attrs = excluded.attrs,
                        category = excluded.category,
                        returns_window_days = excluded.returns_window_days""",
-                {**product, "attrs": json.dumps(product["attrs"], sort_keys=True)},
+                {
+                    **product,
+                    "attrs": json.dumps(product.get("attrs") or {}, sort_keys=True),
+                },
             )
-        for row in raw["product_private"]:
+        for row in private_rows:
             conn.execute(
                 """INSERT INTO product_private
                        (sku, cost_inr, margin_pct, floor_price_inr, max_discount_pct,
@@ -174,10 +214,13 @@ def seed_database(path: Path | str | None = None, conn: sqlite3.Connection | Non
                     "attach_candidates": json.dumps(
                         row.get("attach_candidates", []), sort_keys=True
                     ),
+                    "tier_up_sku": row.get("tier_up_sku"),
                     "offerable": int(row.get("offerable", True)),
                 },
             )
-    return len(raw["products"])
+    cache.load(conn)
+    return len(public_rows)
+
 
 
 # ---------------------------------------------------------------------------

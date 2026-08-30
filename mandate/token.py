@@ -125,6 +125,8 @@ def split(token: str) -> tuple[dict[str, Any], dict[str, Any], bytes, bytes]:
     """
     if not isinstance(token, str) or not token:
         raise MalformedToken("mandate token is empty")
+    if len(token) > 8192:
+        raise MalformedToken("mandate token too large")
     parts = token.strip().split(".")
     if len(parts) != 3:
         raise MalformedToken(

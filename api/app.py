@@ -27,7 +27,7 @@ from settings import (
     POLICY_MODE,
     SECRET_ENV_VARS,
 )
-from api import agent, approvals, audit, manifest, webhooks
+from api import agent, approvals, audit, auth, dashboard, demo, manifest, ops, orders, policy, stores, webhooks
 from api import mcp as mcp_module
 from kernel import checkout as checkout_kernel
 from mandate.issuers import DEMO_ISSUER_ID, bootstrap_demo_issuer
@@ -80,6 +80,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Reservations from abandoned two-step checkouts hold discount budget that
     # nothing else will ever release. Sweep at boot so a restart cannot inherit
     # yesterday's phantom spend.
+    # Seed test merchant for dashboard sign-in (auth page). Keeps frontend design intact.
+    try:
+        from store.auth import create_merchant, get_by_email
+        if not get_by_email("merchant@aether.test", "default"):
+            create_merchant(email="merchant@aether.test", password="praman123", store_id="default")
+            log.info("seeded test merchant merchant@aether.test / praman123 (store default)")
+        if not get_by_email("merchant@voltmart.test", "voltmart"):
+            try:
+                create_merchant(email="merchant@voltmart.test", password="praman123", store_id="voltmart")
+            except Exception:
+                pass
+    except Exception as e:
+        log.warning("auth seed skipped: %s", e)
+
     released = checkout_kernel.expire_abandoned()
     if released:
         log.info("released %d abandoned checkout reservation(s)", len(released))
@@ -122,8 +136,16 @@ def create_app() -> FastAPI:
         CORSMiddleware,
         allow_origins=[DASHBOARD_ORIGIN],
         allow_credentials=False,
-        allow_methods=["GET", "POST"],
-        allow_headers=["*"],
+        allow_methods=["GET", "POST", "PUT"],
+        allow_headers=[
+            "Content-Type",
+            "Authorization",
+            "X-Merchant-Key",
+            "X-Demo-Key",
+            "Idempotency-Key",
+            "X-Razorpay-Signature",
+            "X-Store-Id",
+        ],
     )
 
     app.include_router(manifest.router)
@@ -131,6 +153,24 @@ def create_app() -> FastAPI:
     app.include_router(agent.router)
     app.include_router(approvals.router)
     app.include_router(webhooks.router)
+    app.include_router(demo.router)
+    app.include_router(auth.router)
+    app.include_router(dashboard.router)
+    app.include_router(ops.router)
+    app.include_router(orders.router)
+    app.include_router(stores.router)
+    app.include_router(policy.router)
+
+    # The merchant panel: a static single-page console served by this same
+    # process, so a demo is "open the browser" and nothing else. It speaks to
+    # the exact same authenticated JSON endpoints an external client would —
+    # there is no second, friendlier API behind it.
+    from fastapi.staticfiles import StaticFiles
+    from pathlib import Path
+
+    panel_dir = Path(__file__).resolve().parent / "static" / "panel"
+    if panel_dir.exists():
+        app.mount("/panel", StaticFiles(directory=panel_dir, html=True), name="panel")
 
     # One MCP server per app, held on app.state so the lifespan can start its
     # session manager. A module-level singleton would be shared between two apps

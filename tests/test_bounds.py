@@ -74,12 +74,12 @@ NOW = datetime(2026, 5, 1, 12, 0, 0, tzinfo=timezone.utc)
 def test_every_declared_bound_has_an_implementation():
     """The declared set and the implemented set are the same set.
 
-    This is the test that makes "nine bounds" a checkable claim rather than a
+    This is the test that makes "ten bounds" a checkable claim rather than a
     number in a README. Adding a bound to settings without writing its function,
     or vice versa, fails here.
     """
     assert set(BOUND_FUNCTIONS) == set(BOUND_IDS)
-    assert sorted(BOUND_FUNCTIONS) == list(range(1, 10))
+    assert sorted(BOUND_FUNCTIONS) == list(range(1, 11))
 
 
 def test_each_bound_returns_its_own_number():
@@ -94,6 +94,7 @@ def test_each_bound_returns_its_own_number():
         7: dict(sku="X", requested_qty=1, available_qty=1),
         8: dict(issued_at=NOW, now=NOW),
         9: dict(key="k"),
+        10: dict(sku="Y", base_sku="X", related_skus=frozenset({"Y"})),
     }
     for number, function in BOUND_FUNCTIONS.items():
         result = function(**calls[number])

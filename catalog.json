@@ -264,6 +264,7 @@
       "max_discount_pct": 12,
       "attach_candidates": [
         { "sku": "AT-CASE-01", "attach_rate": 0.31, "margin_pct": 52 },
+        { "sku": "AT-CBL-USBC", "attach_rate": 0.22, "margin_pct": 48 },
         { "sku": "AT-TIP-FOAM", "attach_rate": 0.18, "margin_pct": 60 }
       ],
       "tier_up_sku": "AT-PRO-MAX",

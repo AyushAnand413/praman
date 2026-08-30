@@ -712,6 +712,56 @@ class Grahak:
         body, _ = self._get(_fill(self._path("order_status"), order_id))
         return dict(body)
 
+    def accept_counter(
+        self,
+        order_id: str,
+        *,
+        idempotency_key: str | None = None,
+        mandate: str | None = None,
+    ) -> Purchase:
+        """Complete a countered negotiation: poll, extract, buy the new terms.
+
+        A COUNTERED order carries `counter_offer_id` in its poll response — a
+        real bounded, signed offer at the merchant's new price. Accepting it is
+        an ordinary checkout against that offer, so every bound and gate runs
+        again on the new terms exactly as they ran on the original ones. A
+        mandate is attached when supplied, for counters that land in the
+        mandate band.
+        """
+        status = self.check(order_id)
+        counter_offer_id = status.get("counter_offer_id")
+        if not counter_offer_id:
+            raise WalletRefused(
+                f"order {order_id} carries no counter-offer "
+                f"(status: {status.get('status')}); nothing to accept"
+            )
+
+        # No amount is stated here — the store reads the price from its own
+        # stored row, which is the whole point of this agent.
+        payload: dict[str, Any] = {
+            "offer_id": counter_offer_id,
+            "option_id": "counter",
+            "agent_id": self.agent_id,
+        }
+        if mandate:
+            payload["mandate"] = mandate
+
+        key = idempotency_key or f"grahak-counter-{secrets.token_hex(12)}"
+        body_, _ = self._post(
+            self._path("checkout"), payload, headers={"Idempotency-Key": key}
+        )
+        return Purchase(
+            order_id=str(body_["order_id"]),
+            status=str(body_["status"]),
+            state=str(body_.get("state", "")),
+            amount_inr=int(body_["amount_inr"]),
+            gate_tier=int(body_.get("gate_tier", 0)),
+            policy_mode=str(body_.get("policy_mode", "")),
+            idempotency_key=key,
+            mandate_used=bool(mandate),
+            payload=dict(body_),
+        )
+
     # -- composed ----------------------------------------------------------
 
     def shop(
@@ -729,6 +779,8 @@ class Grahak:
         Browsing before asking is not decoration. It is how the agent learns the
         categories it needs to scope a mandate to the cart it is actually buying,
         which is the difference between a narrow authority and a blank cheque.
+
+        Runs sequentially as a single shopper would; no parallel calls.
         """
         if self.discovery is None:
             self.discover()

@@ -46,7 +46,8 @@ MAX_WHY_CHARS = 240
 
 _BASE_KEYS = frozenset({"sku", "qty", "discount_pct", "why"})
 _UPSELL_KEYS = frozenset({"type", "sku", "qty", "discount_pct", "why"})
-_TOP_KEYS = frozenset({"base", "proposed_upsells"})
+_TOP_KEYS = frozenset({"candidates"})
+_PROPOSAL_KEYS = frozenset({"base", "proposed_upsells"})
 
 
 class SchemaError(ValueError):
@@ -135,36 +136,46 @@ _WHY_DESCRIPTION = (
 RESPONSE_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
-        "base": {
-            "type": "object",
-            "properties": {
-                "sku": {"type": "string", "description": "Must exist in the catalog."},
-                "qty": {"type": "integer", "description": "At least 1."},
-                "discount_pct": {
-                    "type": "number",
-                    "description": "Percent off unit list price. 0 means sell at list.",
-                },
-                "why": {"type": "string", "description": _WHY_DESCRIPTION},
-            },
-            "required": ["sku", "qty", "discount_pct", "why"],
-        },
-        "proposed_upsells": {
+        "candidates": {
             "type": "array",
-            "description": f"At most {MAX_UPSELLS}. Empty array when none fit.",
+            "description": "An array of candidate deals.",
             "items": {
                 "type": "object",
                 "properties": {
-                    "type": {"type": "string", "enum": list(UPSELL_TYPES)},
-                    "sku": {"type": "string"},
-                    "qty": {"type": "integer"},
-                    "discount_pct": {"type": "number"},
-                    "why": {"type": "string", "description": _WHY_DESCRIPTION},
+                    "base": {
+                        "type": "object",
+                        "properties": {
+                            "sku": {"type": "string", "description": "Must exist in the catalog."},
+                            "qty": {"type": "integer", "description": "At least 1."},
+                            "discount_pct": {
+                                "type": "number",
+                                "description": "Percent off unit list price. 0 means sell at list.",
+                            },
+                            "why": {"type": "string", "description": _WHY_DESCRIPTION},
+                        },
+                        "required": ["sku", "qty", "discount_pct", "why"],
+                    },
+                    "proposed_upsells": {
+                        "type": "array",
+                        "description": f"At most {MAX_UPSELLS}. Empty array when none fit.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "type": {"type": "string", "enum": list(UPSELL_TYPES)},
+                                "sku": {"type": "string"},
+                                "qty": {"type": "integer"},
+                                "discount_pct": {"type": "number"},
+                                "why": {"type": "string", "description": _WHY_DESCRIPTION},
+                            },
+                            "required": ["type", "sku", "qty", "discount_pct", "why"],
+                        },
+                    },
                 },
-                "required": ["type", "sku", "qty", "discount_pct", "why"],
-            },
-        },
+                "required": ["base", "proposed_upsells"],
+            }
+        }
     },
-    "required": ["base", "proposed_upsells"],
+    "required": ["candidates"],
 }
 
 
@@ -261,15 +272,8 @@ def _parse_upsell_type(value: Any, *, field: str) -> str:
     return str(value)
 
 
-def parse(raw: str | bytes | dict[str, Any]) -> Proposal:
-    """Rebuild a `Proposal` from a model response, or raise `SchemaError`.
-
-    Text is decoded with `json.loads` and nothing else. No fence stripping, no
-    hunting for the first `{`: the model is given a JSON mime type and a
-    response schema, so a markdown fence or a sentence of preamble means the
-    contract was ignored. Tolerating it would teach the model that the contract
-    is optional, and the one-retry path already exists for exactly this.
-    """
+def parse(raw: str | bytes | dict[str, Any]) -> tuple[Proposal, ...]:
+    """Rebuild a list of `Proposal` candidates from a model response, or raise `SchemaError`."""
     if isinstance(raw, bytes):
         try:
             raw = raw.decode("utf-8")
@@ -292,56 +296,69 @@ def parse(raw: str | bytes | dict[str, Any]) -> Proposal:
     top = _require_mapping(decoded, field="")
     _require_exact_keys(top, _TOP_KEYS, field="")
 
-    base_node = _require_mapping(top["base"], field="base")
-    _require_exact_keys(base_node, _BASE_KEYS, field="base")
-    base = ProposedItem(
-        sku=_parse_sku(base_node["sku"], field="base.sku"),
-        qty=_parse_qty(base_node["qty"], field="base.qty"),
-        discount_pct=_parse_discount_pct(
-            base_node["discount_pct"], field="base.discount_pct"
-        ),
-        why=_parse_why(base_node["why"], field="base.why"),
-    )
-
-    raw_upsells = top["proposed_upsells"]
-    if not isinstance(raw_upsells, list):
+    raw_candidates = top["candidates"]
+    if not isinstance(raw_candidates, list):
         raise SchemaError(
-            f"proposed_upsells must be an array, got {type(raw_upsells).__name__}",
-            field="proposed_upsells",
+            f"candidates must be an array, got {type(raw_candidates).__name__}",
+            field="candidates",
         )
-    if len(raw_upsells) > MAX_UPSELLS:
-        raise SchemaError(
-            f"proposed {len(raw_upsells)} upsells; the limit is {MAX_UPSELLS}",
-            field="proposed_upsells",
+    
+    parsed_candidates = []
+    for idx, candidate_node in enumerate(raw_candidates):
+        c_field = f"candidates[{idx}]"
+        candidate_node = _require_mapping(candidate_node, field=c_field)
+        _require_exact_keys(candidate_node, _PROPOSAL_KEYS, field=c_field)
+
+        base_node = _require_mapping(candidate_node["base"], field=f"{c_field}.base")
+        _require_exact_keys(base_node, _BASE_KEYS, field=f"{c_field}.base")
+        base = ProposedItem(
+            sku=_parse_sku(base_node["sku"], field=f"{c_field}.base.sku"),
+            qty=_parse_qty(base_node["qty"], field=f"{c_field}.base.qty"),
+            discount_pct=_parse_discount_pct(
+                base_node["discount_pct"], field=f"{c_field}.base.discount_pct"
+            ),
+            why=_parse_why(base_node["why"], field=f"{c_field}.base.why"),
         )
 
-    upsells: list[ProposedUpsell] = []
-    seen = {base.sku}
-    for index, node in enumerate(raw_upsells):
-        field = f"proposed_upsells[{index}]"
-        item = _require_mapping(node, field=field)
-        _require_exact_keys(item, _UPSELL_KEYS, field=field)
-        sku = _parse_sku(item["sku"], field=f"{field}.sku")
-        # A repeated SKU would produce two priced lines for one product, and the
-        # per-line discount cap would then be applied to each half rather than
-        # to the total the buyer actually pays for it.
-        if sku in seen:
+        raw_upsells = candidate_node["proposed_upsells"]
+        if not isinstance(raw_upsells, list):
             raise SchemaError(
-                f"sku {sku!r} appears more than once; each SKU may appear on one "
-                "line only",
-                field=f"{field}.sku",
+                f"proposed_upsells must be an array, got {type(raw_upsells).__name__}",
+                field=f"{c_field}.proposed_upsells",
             )
-        seen.add(sku)
-        upsells.append(
-            ProposedUpsell(
-                sku=sku,
-                qty=_parse_qty(item["qty"], field=f"{field}.qty"),
-                discount_pct=_parse_discount_pct(
-                    item["discount_pct"], field=f"{field}.discount_pct"
-                ),
-                why=_parse_why(item["why"], field=f"{field}.why"),
-                upsell_type=_parse_upsell_type(item["type"], field=f"{field}.type"),
+        if len(raw_upsells) > MAX_UPSELLS:
+            raise SchemaError(
+                f"proposed {len(raw_upsells)} upsells; the limit is {MAX_UPSELLS}",
+                field=f"{c_field}.proposed_upsells",
             )
-        )
+        seen = {base.sku}
+        upsells = []
+        for u_idx, u_raw in enumerate(raw_upsells):
+            u_field = f"{c_field}.proposed_upsells[{u_idx}]"
+            u_node = _require_mapping(u_raw, field=u_field)
+            _require_exact_keys(u_node, _UPSELL_KEYS, field=u_field)
+            u_type = _parse_upsell_type(u_node["type"], field=f"{u_field}.type")
+            u_sku = _parse_sku(u_node["sku"], field=f"{u_field}.sku")
+            
+            if u_sku in seen:
+                raise SchemaError(
+                    f"sku {u_sku!r} appears more than once; each SKU may appear on one line only",
+                    field=f"{u_field}.sku",
+                )
+            seen.add(u_sku)
+            
+            upsells.append(
+                ProposedUpsell(
+                    upsell_type=u_type,
+                    sku=u_sku,
+                    qty=_parse_qty(u_node["qty"], field=f"{u_field}.qty"),
+                    discount_pct=_parse_discount_pct(
+                        u_node["discount_pct"], field=f"{u_field}.discount_pct"
+                    ),
+                    why=_parse_why(u_node["why"], field=f"{u_field}.why"),
+                )
+            )
 
-    return Proposal(base=base, upsells=tuple(upsells))
+        parsed_candidates.append(Proposal(base=base, upsells=tuple(upsells)))
+        
+    return tuple(parsed_candidates)

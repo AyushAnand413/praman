@@ -100,6 +100,39 @@ OFFER_TTL_SECONDS = 300
 # 9 — double-charging. Mandatory, not tunable.
 IDEMPOTENCY_KEY_REQUIRED = True
 
+# 10 — an upsell must be related to the item it accompanies. Relatedness is
+# evidence-based: learned pairings from completed orders, seeded companions,
+# or a declared attach candidate / tier-up path. A discount can be legal in
+# every other respect and still be refused for pairing a laptop with cat food.
+RELATEDNESS_MIN_SAMPLES = 5
+
+# How fast learned evidence ages. Counts decay exponentially with this
+# half-life when a pairing is touched, so yesterday's habit fades instead of
+# haunting the catalog forever.
+PAIRING_HALF_LIFE_DAYS = 45
+
+# ---------------------------------------------------------------------------
+# The agentic proposer: exploration with tools, under a hard budget
+# ---------------------------------------------------------------------------
+
+# Master switch. False reverts Vyapaari to the one-shot proposer exactly as it
+# shipped — same prompts, same fallback ladder. A kill-switch on the clever
+# path is what makes shipping the clever path survivable.
+PROPOSER_TOOLS_ENABLED = (
+    os.environ.get("PROPOSER_TOOLS_ENABLED", "true").strip().lower()
+    not in ("0", "false", "no")
+)
+
+# The agent may call at most this many tools before it must answer. A bounded
+# loop is what makes an agent shippable next to a 3-second latency hint:
+# without a cap, "let me check one more thing" is unbounded by construction.
+AGENT_MAX_TOOL_CALLS = int(os.environ.get("AGENT_MAX_TOOL_CALLS", "4"))
+
+# Wall-clock ceiling on the whole exploration, seconds. Sits inside the offer
+# latency budget so that even a maximal exploration still leaves time for the
+# kernel evaluation and the response.
+AGENT_WALL_CLOCK_SECONDS = float(os.environ.get("AGENT_WALL_CLOCK_SECONDS", "2.5"))
+
 #: Bound number -> the identifier written into the ledger when it fires.
 #: A rejection with no bound id is a silent rejection, which is a bug.
 #:
@@ -118,6 +151,7 @@ BOUND_IDS: dict[int, str] = {
     7: "stock_qty_positive",
     8: "offer_ttl_seconds",
     9: "idempotency_key_required",
+    10: "relatedness_required",
 }
 
 
@@ -133,6 +167,13 @@ CANONICAL_JSON_SEPARATORS = (",", ":")
 
 # Stock holds.
 STOCK_HOLD_TTL_SECONDS = 120
+
+# Most SKUs one catalog query will return. This is a ceiling, not paging: it
+# keeps a one-word query from returning the whole shop as though every item
+# matched. It lives here rather than beside the endpoint because it has to rise
+# as the catalog grows, and a limit you have to edit code to raise is a limit
+# that silently truncates results the day a merchant imports a real catalog.
+MAX_CATALOG_RESULTS = int(os.environ.get("MAX_CATALOG_RESULTS", "10"))
 
 # How long an unpaid two-step checkout keeps its reserved discount budget before
 # the sweep takes it back. Deliberately much longer than the hold TTL above: a
@@ -176,6 +217,42 @@ CAPABILITIES = (
 MANDATE_REQUIRED_ABOVE_INR = 2_000
 MANDATE_AUTH_SCHEME = "ed25519-signed-jwt"
 DEFAULT_RETURNS_WINDOW_DAYS = 7
+
+# ---------------------------------------------------------------------------
+# Default MEC values — fallback when no merchant-specific MEC is configured.
+# These preserve exact backward compatibility with the frozen bounds above.
+# ---------------------------------------------------------------------------
+
+DEFAULT_MEC_HARD_CONSTRAINTS = {
+    "min_margin_pct": 20,
+    "max_discount_pct_per_sku": MAX_DISCOUNT_PCT_PER_SKU,
+    "max_cart_discount_pct": MAX_CART_DISCOUNT_PCT,
+    "max_txn_without_human_inr": MAX_TXN_WITHOUT_HUMAN_INR,
+    "min_stock_qty": MIN_STOCK_QTY,
+    "offer_ttl_seconds": OFFER_TTL_SECONDS,
+    "daily_discount_budget_inr": DAILY_DISCOUNT_BUDGET_INR,
+    "max_offers_per_session": MAX_OFFERS_PER_SESSION,
+    "approval_thresholds": {
+        "auto_max_inr": MANDATE_REQUIRED_ABOVE_INR,
+        "mandate_max_inr": MAX_TXN_WITHOUT_HUMAN_INR,
+    },
+}
+
+DEFAULT_MEC_OBJECTIVES = {
+    "margin_weight": "0.25",
+    "conversion_weight": "0.25",
+    "aov_weight": "0.25",
+    "inventory_velocity_weight": "0.25",
+}
+
+DEFAULT_MEC_NEGOTIATION = {
+    "price": True,
+    "quantity": True,
+    "bundles": True,
+    "substitutes": True,
+    "shipping": False,
+    "delivery_date": False,
+}
 
 # The closed set of ledger actors. An event from outside this set is a bug,
 # not a new actor.
@@ -233,6 +310,7 @@ SECRET_ENV_VARS = (
     "MANDATE_SIGNING_SEED",
     "GEMINI_API_KEY",
     "DEMO_KEY",
+    "SHOPIFY_ADMIN_ACCESS_TOKEN",
 )
 
 
@@ -278,6 +356,52 @@ DASHBOARD_ORIGIN = os.environ.get("DASHBOARD_ORIGIN", "http://localhost:3000")
 MERCHANT_NAME = os.environ.get("MERCHANT_NAME", "Aether Audio")
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "http://localhost:8000")
 RAZORPAY_API_BASE = "https://api.razorpay.com/v1"
+
+# ---------------------------------------------------------------------------
+# Shopify connector (integrations/shopify.py)
+# ---------------------------------------------------------------------------
+
+# The dev-store domain, e.g. "my-store.myshopify.com". Not a secret; the admin
+# token below is.
+SHOPIFY_STORE_DOMAIN = os.environ.get("SHOPIFY_STORE_DOMAIN", "")
+SHOPIFY_ADMIN_API_BASE_TEMPLATE = "https://{domain}/admin/api/2024-10"
+
+# Shopify's REST product payload does not carry unit cost, but our envelope
+# drops any SKU without economics rather than inventing a headroom for it. So
+# the importer derives cost from price at this assumed margin and stores the
+# derivation in the private attrs, where a merchant can correct it. Stated
+# honestly here because it is an assumption, not data.
+SHOPIFY_ASSUMED_MARGIN_PCT = int(os.environ.get("SHOPIFY_ASSUMED_MARGIN_PCT", "40"))
+
+# How many products per page during sync.
+SHOPIFY_SYNC_PAGE_LIMIT = 100
+
+# ---------------------------------------------------------------------------
+# Multi-store tenancy
+# ---------------------------------------------------------------------------
+
+# Comma-separated slugs of every store this deployment hosts, e.g.
+# "voltmart,gadgethub". Empty means single-store mode and every row lands
+# under DEFAULT_STORE_ID. Requests name their store via X-Store-Id; anything
+# not in this list resolves to the first entry (or the default) rather than to
+# a wildcard.
+PRAMAN_STORES = tuple(
+    s.strip()
+    for s in os.environ.get("PRAMAN_STORES", "").split(",")
+    if s.strip()
+)
+
+# Which learning cluster each store belongs to, as JSON:
+#   PRAMAN_STORE_CLUSTER_MAP='{"voltmart": "electronics", "gadgethub": "electronics"}'
+# Stores in one cluster share ANONYMOUS CATEGORY-LEVEL pairing priors ("in
+# electronics stores generally, chargers follow phones") — never SKU lists,
+# order details, or identities. A store's own observed data always overrides
+# its cluster's prior once it has enough samples.
+PRAMAN_STORE_CLUSTER_MAP_JSON = os.environ.get("PRAMAN_STORE_CLUSTER_MAP", "{}")
+
+# Cluster priors are suggestions until a store's OWN evidence crosses this
+# many baskets per base category.
+CLUSTER_PRIOR_MIN_OWN_SAMPLES = 5
 
 # The model that writes the sales pitch. A name, not a credential — it belongs
 # here rather than beside GEMINI_API_KEY so it can be logged and put in a ledger

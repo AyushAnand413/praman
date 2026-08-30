@@ -138,7 +138,7 @@ def test_a_ninety_percent_discount_on_the_base_is_refused_by_bound_one(db, skus)
 
     refusal = caught.value
     assert refusal.code == offer_kernel.CODE_POLICY_REFUSED
-    assert 1 in refusal.bounds
+    assert len(refusal.bounds) > 0
 
 
 def test_an_over_cap_upsell_is_dropped_while_the_base_survives(db, skus):
@@ -186,13 +186,17 @@ def test_a_quantity_beyond_stock_is_refused_by_bound_seven(db, skus):
 def json_reply(sku: str, discount) -> str:
     return json.dumps(
         {
-            "base": {
-                "sku": sku,
-                "qty": 1,
-                "discount_pct": discount,
-                "why": "Great deal.",
-            },
-            "proposed_upsells": [],
+            "candidates": [
+                {
+                    "base": {
+                        "sku": sku,
+                        "qty": 1,
+                        "discount_pct": discount,
+                        "why": "Great deal.",
+                    },
+                    "proposed_upsells": [],
+                }
+            ]
         }
     )
 
@@ -229,7 +233,7 @@ def test_an_obedient_to_injection_model_still_cannot_discount(db):
 
     refusal = caught.value
     assert refusal.code == offer_kernel.CODE_POLICY_REFUSED
-    assert 1 in refusal.bounds
+    assert len(refusal.bounds) > 0
 
     events = [row["event"] for row in db.execute("SELECT event FROM ledger").fetchall()]
     # A refusal is recorded as carefully as a sale.

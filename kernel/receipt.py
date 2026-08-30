@@ -49,8 +49,9 @@ from store.canonical import canonical_json
 from store.timestamps import now_ts
 
 #: Bumped if the signed shape changes, so an old receipt is recognised as old
-#: rather than as forged.
-RECEIPT_VERSION = "1"
+#: rather than as forged. v2 adds `exploration` — the agentic proposer's
+#: tool-call trail — to the signed material.
+RECEIPT_VERSION = "2"
 
 SIGNATURE_ALGORITHM = "HMAC-SHA256"
 
@@ -71,6 +72,9 @@ class PolicyReceipt:
     gate: dict[str, Any]
     totals: dict[str, Any]
     signature: str
+    #: The agentic proposer's tool-call trail, signed so the reasoning that
+    #: produced this offer is evidence too. Empty for one-shot proposals.
+    exploration: tuple[dict[str, Any], ...] = ()
 
     def as_payload(self) -> dict[str, Any]:
         """The full receipt, signature included. This is what ships to the buyer."""
@@ -95,11 +99,18 @@ def _signing_body(receipt: "PolicyReceipt | dict[str, Any]") -> dict[str, Any]:
             "reasons": list(receipt.reasons),
             "gate": receipt.gate,
             "totals": receipt.totals,
+            "exploration": list(receipt.exploration),
             "algorithm": SIGNATURE_ALGORITHM,
         }
         return source
 
     body = {key: value for key, value in receipt.items() if key != "signature"}
+    # The version field declares the signed shape, and the verifier honours
+    # what was declared rather than assuming today's: v1 predates the
+    # exploration trail (absence is old-shape), v2 signs it always (stripping
+    # it would be tampering, and setdefault makes that verifiable as such).
+    if str(body.get("version")) != "1":
+        body.setdefault("exploration", [])
     missing = {
         "version", "receipt_id", "offer_id", "issued_at", "gate_tier",
         "policy_mode", "verdicts", "reasons", "gate", "totals", "algorithm",
@@ -129,6 +140,7 @@ def issue(
     gate: GateDecision,
     reasons: list[str] | tuple[str, ...] = (),
     extra_bounds: list[BoundResult] | tuple[BoundResult, ...] = (),
+    exploration: list[dict[str, Any]] | tuple[dict[str, Any], ...] = (),
     key: bytes | None = None,
 ) -> PolicyReceipt:
     """Sign the decision that was just made.
@@ -140,6 +152,11 @@ def issue(
     `extra_bounds` carries results evaluated outside the cart evaluation — the
     mandate checks, for instance — so the receipt covers every bound that
     contributed to the verdict rather than only the ones the cart produced.
+
+    `exploration` is the agentic proposer's tool-call trail. Signing it binds
+    the reasoning to the terms: a buyer auditing this offer can see not only
+    what was offered and why, but what the seller's agent looked at before it
+    decided — and that this account of its thinking predates the sale.
     """
     verdicts: list[dict[str, Any]] = [v.as_payload() for v in evaluation.item_verdicts]
     cart_bounds = [b.as_payload() for b in evaluation.cart_bounds]
@@ -162,6 +179,7 @@ def issue(
             "offer_failed": evaluation.offer_failed,
             "failure_detail": evaluation.failure_detail,
         },
+        exploration=tuple(dict(step) for step in exploration),
         signature="",
     )
     return replace(receipt, signature=_mac(_signing_body(receipt), key=key))

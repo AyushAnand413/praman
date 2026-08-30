@@ -111,6 +111,39 @@ def _popularity_pct(attach_rate: Any) -> int:
     return int((rate * 100).to_integral_value(rounding=ROUND_HALF_UP))
 
 
+def _profit_ranked_attach(private: Mapping[str, Any]) -> list[Any]:
+    """Attach candidates, most PROFITABLE first.
+
+    The merchant wants recommendations that both suit the buyer and earn well,
+    so candidates are ordered by expected margin contribution:
+    margin_pct x attach_rate. The ordering happens here, behind the envelope
+    seam, using private economics the model never sees — the LLM writes the
+    pitch for whatever appears on its shortlist, and the *selection* was
+    already profit-weighted before it looked. Persuasion is the model's job;
+    selection and pricing are deterministic code's.
+
+    Ties and missing margins fall back to the catalog's declared order.
+    """
+    candidates = list(private.get("attach_candidates") or ())
+
+    def profit_key(candidate: Any) -> float:
+        # Float is sufficient here for ranking; Decimal would be more precise
+        # but ranking is not money math, so float avoids extra conversion.
+        margin = candidate.get("margin_pct")
+        rate = candidate.get("attach_rate")
+        try:
+            m = float(margin) if margin is not None else 0.0
+        except (TypeError, ValueError):
+            m = 0.0
+        try:
+            r = float(rate) if rate is not None else 0.0
+        except (TypeError, ValueError):
+            r = 0.0
+        return -(m * r)
+
+    return sorted(candidates, key=profit_key)
+
+
 def build(
     public_rows: Iterable[Mapping[str, Any]],
     private_by_sku: Mapping[str, Mapping[str, Any]],
@@ -141,7 +174,7 @@ def build(
         )
         attach = tuple(
             Attach(sku=str(c["sku"]), popularity_pct=_popularity_pct(c.get("attach_rate")))
-            for c in private.get("attach_candidates", ())
+            for c in _profit_ranked_attach(private)
             if c.get("sku")
         )
         built.append(

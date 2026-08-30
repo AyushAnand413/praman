@@ -26,6 +26,7 @@ from kernel.bounds import LineItem, ROLE_BASE, ROLE_UPSELL, evaluate_offer
 from kernel.gates import assign_tier
 from kernel import receipt as receipts
 from kernel import stock
+from kernel.relations import related_by_base_for_items
 from store import catalog, ids, offers, sessions
 from store.db import get_connection, init_db
 
@@ -193,6 +194,7 @@ def seed(scenario: Scenario, *, conn=None) -> dict[str, Any]:
         offers_made=scenario.offers_made,
         spent_today_inr=0,
         now=None,
+        related_by_base=related_by_base_for_items(items),
     )
     if evaluation.offer_failed:
         if scenario.expect_refusal:

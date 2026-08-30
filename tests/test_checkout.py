@@ -326,20 +326,29 @@ def test_a_genuine_oversell_is_reported_rather_than_swallowed(
 
     If the shelf no longer holds the units — something else sold them while the
     payment was in flight — the decrement cannot happen. Stock is not silently
-    driven negative and the discrepancy is named on the ledger.
+    driven negative, the discrepancy is named on the ledger, and the
+    compensation saga refunds the buyer in full before anything is raised.
     """
     offer = make_offer("tier0")
     result = _checkout(offer, key="key-oversold", client=fake_razorpay)
 
     db.execute("UPDATE products SET stock_qty = 0 WHERE sku = 'AT-CBL-USBC'")
 
-    checkout_kernel.settle(
-        result.order_id, payment_id="pay_test_0004", client=fake_razorpay
-    )
+    with pytest.raises(checkout_kernel.OversoldFault) as excinfo:
+        checkout_kernel.settle(
+            result.order_id, payment_id="pay_test_0004", client=fake_razorpay
+        )
 
+    assert excinfo.value.payload["code"] == "OVERSOLD_MERCHANT_FAULT"
     assert stock.on_hand("AT-CBL-USBC") == 0  # never negative
     anomalies = [e for e in ledger.recent(50) if e.event == "stock.commit_anomaly"]
     assert len(anomalies[0].payload["oversold"]) == 1
+
+    # The saga answered, not just the anomaly entry.
+    events = [e.event for e in ledger.recent(50)]
+    assert "saga.compensation_triggered" in events
+    assert "razorpay.refund" in events
+    assert orders.require(result.order_id)["state"] == orders.REFUNDED
 
 
 def test_the_single_call_path_also_commits_stock(

@@ -33,6 +33,7 @@ veto that works and a veto nobody has ever tested.
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
@@ -40,11 +41,17 @@ from decimal import Decimal
 from hashlib import sha256
 from typing import Any, Iterable, Mapping, Sequence
 
+log = logging.getLogger("aether")
+
 import settings
 from kernel import budgets, mode
 from kernel import reasons as prose
 from kernel import receipt as receipts
 from kernel import stock
+from kernel.relations import related_by_base_for_items
+from policy.pre_filter import CandidateDeal, CandidateItem, pre_filter
+from policy.optimizer import ProductContext, optimize, RankedDeal
+from policy.resolver import resolve_effective_policy
 from kernel.bounds import (
     ROLE_BASE,
     ROLE_UPSELL,
@@ -55,10 +62,12 @@ from kernel.bounds import (
 )
 from kernel.gates import GateDecision, assign_tier
 from store import catalog, ids, ledger, offers, sessions
+from store import pairings as pairings_store
 from store.db import get_connection
 from store.timestamps import utc_now
 from vyapaari import envelope as envelope_module
 from vyapaari import proposer
+from vyapaari.tools import ExplorationTools, envelope_search_factory
 from vyapaari.envelope import SellableSku
 from vyapaari.prompt import ProposalRequest
 from vyapaari.schema import Proposal, ProposedItem
@@ -123,6 +132,60 @@ def need_fingerprint(need: str) -> str:
     """
     return sha256(" ".join(need.split()).lower().encode("utf-8")).hexdigest()
 
+
+# ---------------------------------------------------------------------------
+# Phase 3: Economic Optimizer Helpers
+# ---------------------------------------------------------------------------
+
+
+def _to_candidate_deal(prop: Proposal, by_sku: dict, cand_id: str) -> CandidateDeal:
+    items = []
+    base_sellable = by_sku.get(prop.base.sku)
+    if base_sellable:
+        items.append(CandidateItem(
+            sku=prop.base.sku,
+            quantity=prop.base.qty,
+            unit_price_inr=base_sellable.list_price_inr - unit_discount_inr(base_sellable.list_price_inr, prop.base.discount_pct),
+            discount_pct=prop.base.discount_pct,
+            role="base"
+        ))
+    for up in prop.upsells:
+        up_sellable = by_sku.get(up.sku)
+        if up_sellable:
+            items.append(CandidateItem(
+                sku=up.sku,
+                quantity=up.qty,
+                unit_price_inr=up_sellable.list_price_inr - unit_discount_inr(up_sellable.list_price_inr, up.discount_pct),
+                discount_pct=up.discount_pct,
+                role="upsell"
+            ))
+    total_inr = sum(i.quantity * i.unit_price_inr for i in items)
+    
+    total_list = sum(i.quantity * by_sku[i.sku].list_price_inr for i in items if i.sku in by_sku)
+    overall_discount = Decimal(100) * Decimal(total_list - total_inr) / Decimal(total_list) if total_list else Decimal(0)
+    
+    return CandidateDeal(
+        candidate_id=cand_id,
+        items=tuple(items),
+        total_inr=total_inr,
+        discount_pct=overall_discount,
+        rationale=prop.base.why
+    )
+
+
+def _build_product_context(private_by_sku: Mapping[str, Mapping[str, Any]], available_by_sku: Mapping[str, int]) -> dict[str, ProductContext]:
+    ctx = {}
+    for sku, private in private_by_sku.items():
+        ctx[sku] = ProductContext(
+            sku=sku,
+            stock_remaining=available_by_sku.get(sku, 0),
+            inventory_age_days=30,  # default mock since DB doesn't have it
+            demand_velocity=Decimal("1.0"), # default mock
+            conversion_rate_pct=Decimal("5.0"), # default mock
+            return_rate_pct=Decimal("1.0"), # default mock
+            variable_cost_inr=private.get("cost_inr", 0)
+        )
+    return ctx
 
 # ---------------------------------------------------------------------------
 # Pricing
@@ -542,6 +605,7 @@ def assemble(
             offers_made=offers_made,
             spent_today_inr=spent_today_inr,
             now=moment,
+            related_by_base=related_by_base_for_items(items),
         )
 
     base_eval = evaluate([base_item])
@@ -740,7 +804,21 @@ def build_offer(
         delivery=delivery,
         offers_made=offers_made,
     )
-    outcome = proposer.propose(request, envelope, generate=generate)
+    # The exploration toolbelt: search over this request's envelope (public
+    # fields only), pairings from the learning tables. Injected as callables so
+    # the vyapaari layer stays free of store imports and of anything but reads.
+    tools = ExplorationTools(
+        search_catalog=envelope_search_factory(envelope),
+        get_pairings=lambda sku: [
+            {
+                "sku": p["sku"],
+                "strength": p["strength"],
+                "samples": p["samples"],
+            }
+            for p in pairings_store.pairs_for(sku)
+        ],
+    )
+    outcome = proposer.propose(request, envelope, generate=generate, tools=tools)
     ledger.append(
         "vyapaari",
         "proposal.emitted",
@@ -752,7 +830,7 @@ def build_offer(
         conn=conn,
     )
 
-    if outcome.proposal is None:
+    if outcome.refused:
         refusal = OfferRefused(
             "nothing in the catalog matches this request",
             code=CODE_NO_MATCH,
@@ -761,9 +839,75 @@ def build_offer(
         _ledger_refusal(offer_id, resolved_session_id, refusal, conn=conn)
         raise refusal
 
+    effective_policy = resolve_effective_policy(
+        store_id="default",
+        category=category,
+        sku=base_sku,
+        conn=conn
+    )
+
+    by_sku = envelope_module.by_sku(envelope)
+    candidate_deals = []
+    for idx, cand in enumerate(outcome.candidates):
+        candidate_deals.append(_to_candidate_deal(cand, by_sku, cand_id=str(idx)))
+
+    product_context = _build_product_context(private_by_sku, available_by_sku)
+
+    filter_result = pre_filter(candidate_deals, effective_policy, private_by_sku, available_by_sku)
+
+    if not filter_result.valid:
+        ledger.append(
+            "policy_kernel",
+            "pre_filter.rejected_all",
+            {
+                "offer_id": offer_id,
+                "session_id": resolved_session_id,
+                "rejections": [
+                    {"candidate_id": r.candidate.candidate_id, "reason": r.reason, "bound": r.bound_violated}
+                    for r in filter_result.filtered
+                ]
+            },
+            conn=conn,
+        )
+        violated_bounds = tuple(r.bound_violated for r in filter_result.filtered)
+        refusal = OfferRefused(
+            "All candidates violated merchant policies.",
+            code=CODE_POLICY_REFUSED,
+            http_status=403,
+            bounds=violated_bounds,
+        )
+        log.debug("pre-filter rejected: %s", [(r.candidate.candidate_id, r.reason) for r in filter_result.filtered])
+        _ledger_refusal(offer_id, resolved_session_id, refusal, conn=conn)
+        raise refusal
+
+    ranked = optimize(filter_result.valid, effective_policy, product_context, buyer_budget_inr=budget_inr)
+    best_candidate_id = ranked[0].candidate.candidate_id
+    best_candidate = outcome.candidates[int(best_candidate_id)]
+
+    ledger.append(
+        "policy_kernel",
+        "optimizer.ranked",
+        {
+            "offer_id": offer_id,
+            "session_id": resolved_session_id,
+            "ranked_candidates": [
+                {
+                    "candidate_id": r.candidate.candidate_id,
+                    "score": str(r.score),
+                    "margin_score": str(r.breakdown.margin_score),
+                    "conversion_score": str(r.breakdown.conversion_score),
+                    "aov_score": str(r.breakdown.aov_score),
+                    "inventory_score": str(r.breakdown.inventory_score)
+                }
+                for r in ranked
+            ]
+        },
+        conn=conn,
+    )
+
     try:
         assembly = assemble(
-            outcome.proposal,
+            best_candidate,
             envelope=envelope,
             private_by_sku=private_by_sku,
             available_by_sku=available_by_sku,
@@ -773,6 +917,7 @@ def build_offer(
             budget_inr=budget_inr,
         )
     except OfferRefused as exc:
+        log.debug("assemble rejected: %s", exc)
         _ledger_refusal(offer_id, resolved_session_id, exc, conn=conn)
         raise
 
@@ -813,12 +958,13 @@ def build_offer(
         gate=recommended.gate,
         reasons=recommended.reasons,
         extra_bounds=extra_bounds,
+        exploration=outcome.exploration,
     )
 
     stored = offers.create(
         offer_id=offer_id,
         session_id=resolved_session_id,
-        base_sku=outcome.proposal.base.sku,
+        base_sku=best_candidate.base.sku,
         options=[option.as_payload() for option in assembly.options],
         total_inr=recommended.total_inr,
         gate_tier=assembly.gate_tier,

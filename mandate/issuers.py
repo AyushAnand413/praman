@@ -30,7 +30,11 @@ DEMO_ISSUER_ID = "demo-wallet-01"
 
 
 class TrustedIssuerRegistry:
-    """Issuer id -> ed25519 public key. Read-mostly, guarded for thread safety."""
+    """Issuer id -> ed25519 public key. Read-mostly, guarded for thread safety.
+
+    Note: in-memory only, not persisted across restarts. Suitable for demo;
+    production would use persistent storage.
+    """
 
     def __init__(self) -> None:
         self._keys: dict[str, VerifyKey] = {}

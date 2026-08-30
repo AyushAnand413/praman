@@ -1,0 +1,51 @@
+# Render deployment — FastAPI, Policy Kernel, Vyapaari, MCP remote endpoint.
+#
+# SQLite lives on a persistent disk so the ledger survives deploys. Secrets are
+# env vars only: set RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET (rzp_test_...),
+# RAZORPAY_WEBHOOK_SECRET, POLICY_RECEIPT_HMAC_SECRET, MANDATE_SIGNING_SEED,
+# GEMINI_API_KEY, and DEMO_KEY in the Render dashboard. POLICY_MODE defaults to
+# shadow; flipping a deploy to live is a deliberate act.
+
+services:
+  - type: web
+    name: aether-audio
+    runtime: python
+    rootDir: .
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m uvicorn api.app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    disk:
+      name: bazaar-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.13"
+      - key: DATA_DIR
+        value: /var/data
+      # shadow is the safe direction to fail: a misconfigured deploy moves no
+      # money rather than moving money nobody authorised.
+      - key: POLICY_MODE
+        sync: false
+      # CORS: the dashboard origin, and nothing else.
+      - key: DASHBOARD_ORIGIN
+        value: https://aether-audio.vercel.app
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: RAZORPAY_KEY_ID
+        sync: false
+      - key: RAZORPAY_KEY_SECRET
+        sync: false
+      - key: RAZORPAY_WEBHOOK_SECRET
+        sync: false
+      - key: POLICY_RECEIPT_HMAC_SECRET
+        generateValue: true
+      - key: MANDATE_SIGNING_SEED
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: DEMO_KEY
+        sync: false
+
+# Webhooks point Razorpay at https://<service>.onrender.com/webhooks/razorpay
+# in the Razorpay dashboard; ngrok is local development only.

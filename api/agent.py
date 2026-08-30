@@ -46,10 +46,9 @@ from store import catalog, ledger, orders
 
 router = APIRouter(prefix="/agent/v1", tags=["agent"])
 
-#: Most SKUs one catalog query will return. The catalog is 14 items, so this is
-#: not paging — it is a ceiling that keeps a one-word query from returning the
-#: whole shop as though every item matched.
-MAX_CATALOG_RESULTS = 10
+#: Most SKUs one catalog query will return. Re-exported from settings so this
+#: module and api/mcp.py share one ceiling; raise it by env, not by edit.
+MAX_CATALOG_RESULTS = settings.MAX_CATALOG_RESULTS
 
 
 class CatalogRequest(BaseModel):
@@ -276,6 +275,12 @@ def checkout(
             mandate_token=body.mandate,
             payment_id=body.payment_id,
         )
+    except checkout_kernel.OversoldFault as exc:
+        # The compensation has already run: money refunded, order voided for
+        # fulfilment, SKU self-healed, ledger complete. The agent gets the
+        # structured failure — fault, refund, remedy, retry-safe — not a bare
+        # error.
+        raise HTTPException(status_code=exc.http_status, detail=exc.payload) from exc
     except checkout_kernel.CheckoutError as exc:
         raise HTTPException(
             status_code=exc.http_status,
@@ -310,6 +315,8 @@ def settle(order_id: str, body: SettleRequest) -> dict[str, Any]:
         raise HTTPException(
             status_code=404, detail={"code": "order_not_found", "message": str(exc)}
         ) from exc
+    except checkout_kernel.OversoldFault as exc:
+        raise HTTPException(status_code=exc.http_status, detail=exc.payload) from exc
     except checkout_kernel.CheckoutError as exc:
         raise HTTPException(
             status_code=exc.http_status,

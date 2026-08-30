@@ -1,37 +1,81 @@
-# Secrets — env vars only (plan.md §15). Never commit these.
+# Secrets — never commit these. Env vars only.
 .env
 .env.*
 !.env.example
 
-# Runtime data: the SQLite database, WAL sidecars, generated checkout pages.
+# Runtime data: SQLite DB, WAL sidecars, generated pages, logs, chain anchors
 data/
 *.db
 *.db-wal
 *.db-shm
+*.db-shm
+data/*.html
+data/*.jsonl
+data/*.log
+data/*.txt
+!data/.gitkeep
+!data/README.md
 
 # Python
 __pycache__/
 *.py[cod]
+*.pyo
 .venv/
 venv/
+env/
 .pytest_cache/
 .tmp/
 .tmp.pytest_cache/
+.tmp.pytest_cache/
 .ruff_cache/
+.mypy_cache/
 *.egg-info/
 .coverage
+.coverage.*
 htmlcov/
+.pytest_cache/
+.tox/
 
-# Local tooling — session notes, Claude settings, launcher script.
+# OS / Editor
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+*.code-workspace
+
+# Local tooling — session notes, Claude settings
 .claude/
+.opencode/
 start-claude.bat
+*.log
 
-# Planning docs — kept local, not part of the shipped code.
+# Planning docs — local only
 plan.md
 idea.md
 BAZAAR_BUILD_PHASES.md
+PRAMAN_UPGRADATION.md
+PRAMAN_2.0_Architecture.md
+catalog.json.bak
+WIRING_CHECKLIST.md
+MEMORY_FEATURE_PROPOSAL.md
+dashboard/CHECKLIST.md
 
-# Dashboard (Phase 4)
-node_modules/
-.next/
-.vercel/
+# Dashboard build
+dashboard/node_modules/
+dashboard/.next/
+dashboard/.vercel/
+dashboard/out/
+dashboard/dist/
+dashboard/.env.local
+dashboard/.env.*.local
+
+# Render / deploy
+.render/
+
+# Temporary scripts output
+output/
+tmp/
+temp/

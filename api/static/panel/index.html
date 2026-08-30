@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PRAMAN · Merchant Console</title>
+  <link rel="stylesheet" href="panel.css" />
+</head>
+<body>
+  <div class="stage-glow"></div>
+
+  <div id="banner" class="banner hidden"></div>
+
+  <!-- gate -->
+  <main class="stage" id="gate">
+    <div class="canvas gate-canvas">
+      <div class="logo-tile">◈</div>
+      <h1 class="display">PRAMAN</h1>
+      <p class="tagline">Merchant Console</p>
+      <p class="muted small">Every rupee bounded · gated · explained · provable</p>
+      <input id="key-input" type="password" placeholder="merchant key" autofocus />
+      <button id="key-go" class="pill dark wide-btn">Open console &nbsp;→</button>
+      <p class="error" id="gate-error"></p>
+    </div>
+  </main>
+
+  <!-- console -->
+  <main class="stage hidden" id="app">
+    <div class="canvas">
+      <header class="topbar">
+        <div class="brand">
+          <div class="logo-tile sm">◈</div>
+          <div>
+            <h1 class="display sm">Merchant Console</h1>
+            <div class="subtle"><span class="live-dot"></span> live · <span id="clock"></span></div>
+          </div>
+        </div>
+        <div class="actions">
+          <button id="btn-sync" class="pill">Sync Shopify</button>
+          <button id="btn-anchor" class="pill">Anchor chain</button>
+          <button id="btn-oversell" class="pill danger">Force oversell</button>
+        </div>
+      </header>
+
+      <section class="hero-row">
+        <div class="hero-copy">
+          <h2 class="display" id="hero-title">How PRAMAN<br/>works today</h2>
+          <p class="muted" id="hero-sub">
+            An AI salesman proposes. Deterministic code disposes.
+            Every rupee below is bounded, gated, and provable.
+          </p>
+          <div class="steps">
+            <button class="pill dark step active" data-step="0">Revenue &nbsp;→</button>
+            <button class="pill step" data-step="1">The cage &nbsp;↗</button>
+            <button class="pill step" data-step="2">The ledger &nbsp;↗</button>
+          </div>
+        </div>
+        <div class="hero-panel" id="panel-metrics"><div class="loading">…</div></div>
+      </section>
+
+      <section class="grid">
+        <div class="card" id="panel-approvals"><h3>Needs your approval</h3><div class="loading">…</div></div>
+        <div class="card" id="panel-safety"><h3>The cage at work</h3><div class="loading">…</div></div>
+      </section>
+
+      <section class="card" id="panel-feed"><h3>Live ledger feed</h3><div class="loading">…</div></section>
+
+      <section class="grid">
+        <div class="card" id="panel-bounds"><h3>Active bounds</h3><div class="loading">…</div></div>
+        <div class="card" id="panel-chain"><h3>Proof chain</h3><div class="loading">…</div></div>
+      </section>
+
+      <footer class="foot muted">
+        <b>Observability</b> is this console · <b>Auditability</b> is the chain —
+        tamper-evident, not tamper-proof. They fail for different reasons, so we built both.
+      </footer>
+    </div>
+  </main>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="panel.js"></script>
+</body>
+</html>

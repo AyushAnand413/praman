@@ -136,10 +136,17 @@ def decide(
     state: str,
     decided_by: str,
     counter_amount_inr: int | None = None,
+    counter_offer_id: str | None = None,
     note: str | None = None,
     conn: sqlite3.Connection | None = None,
 ) -> dict[str, Any]:
-    """Record a human decision. Refuses to decide an already-decided approval."""
+    """Record a human decision. Refuses to decide an already-decided approval.
+
+    A COUNTERED decision names both the counter amount and the offer id that
+    carries it — the poll endpoint surfaces that offer to the buyer agent, so
+    the negotiation completes through the rail rather than through a human
+    relaying terms.
+    """
     if state not in DECIDED_STATES:
         raise ValueError(
             f"{state!r} is not a decision; expected one of {sorted(DECIDED_STATES)}"
@@ -166,11 +173,13 @@ def decide(
         conn.execute(
             """UPDATE approvals
                   SET state = ?, counter_amount_inr = ?,
+                      counter_offer_id = COALESCE(?, counter_offer_id),
                       note = COALESCE(?, note), decided_at = ?, decided_by = ?
                 WHERE approval_id = ?""",
             (
                 state,
                 None if counter_amount_inr is None else int(counter_amount_inr),
+                counter_offer_id,
                 note,
                 now_ts(),
                 decided_by,

@@ -62,6 +62,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable
 
+import httpx
+
 from settings import CHECKOUT_ABANDONED_AFTER_SECONDS, OFFER_TTL_SECONDS
 from kernel import budgets, idempotency, mode, receipt as receipts, stock
 from kernel.bounds import (
@@ -71,10 +73,10 @@ from kernel.bounds import (
     evaluate_checkout,
 )
 from kernel.gates import TIER_HUMAN, TIER_MANDATE, assign_tier
-from kernel.payments import RazorpayClient
+from kernel.payments import RazorpayClient, RazorpayError
 from mandate import verifier
 from store import approvals as approvals_store
-from store import catalog, ids, ledger, offers, orders
+from store import catalog, ids, ledger, offers, orders, pairings, tenancy
 from store.timestamps import parse, plus_seconds, utc_now
 
 #: What the buyer agent is told. These strings are part of the agent-facing
@@ -94,6 +96,25 @@ class CheckoutError(RuntimeError):
         super().__init__(message)
         self.code = code
         self.http_status = http_status
+
+
+class OversoldFault(CheckoutError):
+    """A payment was captured for stock that no longer exists.
+
+    Raised only after the compensation saga has fully run: by the time the
+    caller sees this, the refund has been issued, the order is REFUNDED, the
+    SKU is self-healed, and the whole sequence is on the ledger. `payload` is
+    the structured OVERSOLD_MERCHANT_FAULT body the buyer agent receives —
+    fault attributed, money returned, remedy offered, retry declared safe.
+    """
+
+    def __init__(self, payload: dict[str, Any]) -> None:
+        super().__init__(
+            str(payload.get("human_message", "oversold; refunded automatically")),
+            code=str(payload.get("code", "OVERSOLD_MERCHANT_FAULT")),
+            http_status=409,
+        )
+        self.payload = payload
 
 
 @dataclass(frozen=True)
@@ -714,7 +735,26 @@ def _proceed_to_payment(
                 "gate_tier": str(gate.tier),
             },
         )
+    except (RazorpayError, httpx.HTTPError) as exc:
+        _unwind(order_id, holds.values(), budget_reserved)
+        ledger.append(
+            "policy_kernel",
+            "payment.failed",
+            {
+                "order_id": order_id,
+                "stage": "order_create",
+                "error": str(exc)[:400],
+            },
+            money_delta_inr=0,
+            reason=f"gateway order creation failed for {order_id}: {str(exc)[:200]}",
+        )
+        raise CheckoutError(
+            f"payment gateway rejected order creation: {exc}",
+            code="gateway_error",
+            http_status=502,
+        ) from exc
     except Exception as exc:
+        # Unexpected error — not a gateway failure, do not mask programming errors.
         _unwind(order_id, holds.values(), budget_reserved)
         ledger.append(
             "policy_kernel",
@@ -851,7 +891,27 @@ def settle(
     # ── Step 7. Capture ──────────────────────────────────────────────────────
     try:
         payment = client.fetch_payment(payment_id)
+    except (RazorpayError, httpx.HTTPError) as exc:
+        _unwind(order_id, holds or [], budget_reserved)
+        ledger.append(
+            "policy_kernel",
+            "payment.failed",
+            {
+                "order_id": order_id,
+                "razorpay_payment_id": payment_id,
+                "stage": "fetch",
+                "error": str(exc)[:400],
+            },
+            reason=(
+                f"could not read payment {payment_id} for order {order_id}: "
+                f"{str(exc)[:200]}"
+            ),
+        )
+        raise CheckoutError(
+            f"payment lookup failed: {exc}", code="capture_failed", http_status=502
+        ) from exc
     except Exception as exc:
+        # Unexpected error — not a gateway failure, do not mask programming errors.
         _unwind(order_id, holds or [], budget_reserved)
         ledger.append(
             "policy_kernel",
@@ -909,7 +969,24 @@ def settle(
             captured = payment
         else:
             captured = client.capture_payment(payment_id, amount_inr)
+    except (RazorpayError, httpx.HTTPError) as exc:
+        _unwind(order_id, holds or [], budget_reserved)
+        ledger.append(
+            "policy_kernel",
+            "payment.failed",
+            {
+                "order_id": order_id,
+                "razorpay_payment_id": payment_id,
+                "stage": "capture",
+                "error": str(exc)[:400],
+            },
+            reason=f"capture failed for order {order_id}: {str(exc)[:200]}",
+        )
+        raise CheckoutError(
+            f"payment capture failed: {exc}", code="capture_failed", http_status=502
+        ) from exc
     except Exception as exc:
+        # Unexpected error — not a gateway failure, do not mask programming errors.
         _unwind(order_id, holds or [], budget_reserved)
         ledger.append(
             "policy_kernel",
@@ -948,6 +1025,39 @@ def settle(
             "captured amount does not match the authorised amount",
             code="amount_mismatch",
             http_status=500,
+        )
+
+    # A gateway that answers rather than raises can report a decline: a test
+    # card that always fails comes back shaped like a success with
+    # `captured: False`. Trusting the shape instead of the flag would advance
+    # this order to CAPTURED on money that never moved, so the flag is the
+    # check. Nothing was charged; the reservations are unwound and the caller
+    # may retry with another method under a fresh key.
+    if not captured.get("captured"):
+        _unwind(order_id, holds or [], budget_reserved)
+        ledger.append(
+            "razorpay",
+            "payment.declined",
+            {
+                "order_id": order_id,
+                "razorpay_order_id": order["razorpay_order_id"],
+                "razorpay_payment_id": payment_id,
+                "amount_inr": amount_inr,
+                "gateway_status": captured.get("status"),
+                "error_code": captured.get("error_code"),
+                "error_description": captured.get("error_description"),
+            },
+            reason=(
+                f"payment {payment_id} was declined by the gateway for order "
+                f"{order_id}. No charge occurred; stock and discount budget "
+                "were released."
+            ),
+        )
+        raise CheckoutError(
+            "the payment was declined by the gateway; no charge was made and "
+            "it is safe to retry with a different method",
+            code="payment_declined",
+            http_status=402,
         )
 
     orders.advance(
@@ -1022,6 +1132,70 @@ def settle(
             f"{order_id}"
         ),
     )
+
+    # ── The store learns from every completed basket ─────────────────────────
+    # Recorded only on a clean completion: a refunded oversell is not evidence
+    # of what sells together, it is evidence of what didn't. Failures here are
+    # swallowed deliberately — learning must never break the sale that fed it.
+    if not stock_report.get("oversold"):
+        try:
+            sold_offer = offers.get(order["offer_id"])
+            if sold_offer is not None:
+                sold_option = offers.option(sold_offer, order["option_id"])
+                base_skus = [
+                    str(i["sku"])
+                    for i in sold_option.get("items", [])
+                    if i.get("role") == ROLE_BASE
+                ]
+                companions = [
+                    str(i["sku"])
+                    for i in sold_option.get("items", [])
+                    if i.get("role") != ROLE_BASE
+                ]
+                if base_skus:
+                    pairings.record_order_basket(base_skus[0], companions)
+
+                    # The anonymous category-level prior, pooled with related
+                    # stores in the same learning cluster.
+                    base_public = catalog.cache.public(base_skus[0])
+                    if base_public is not None:
+                        companion_categories = []
+                        for sku in companions:
+                            public_row = catalog.cache.public(sku)
+                            if public_row is not None:
+                                companion_categories.append(public_row["category"])
+                        pairings.record_category_basket(
+                            base_public["category"],
+                            companion_categories,
+                            cluster=tenancy.cluster_for_store(),
+                        )
+        except Exception:  # noqa: BLE001 - learning is never load-bearing
+            ledger.append(
+                "system",
+                "learning.record_failed",
+                {"order_id": order_id},
+                reason=(
+                    f"pairing observation for order {order_id} could not be "
+                    "recorded; the sale stands and the lesson is skipped"
+                ),
+            )
+
+    # ── The failure the hold could not prevent ───────────────────────────────
+    # The capture is on the ledger, and the shelf could not cover it. The
+    # compensation saga runs now, in full, before anything is raised: by the
+    # time the caller sees an error the refund already exists. The discount
+    # budget stays spent — the discount was genuinely given — and the net
+    # money delta for the order is zero once the refund entry lands.
+    if stock_report.get("oversold"):
+        from kernel import saga
+
+        compensated = saga.compensate(
+            orders.require(order_id),
+            stock_report=stock_report,
+            client=client,
+        )
+        raise OversoldFault(compensated)
+
     return orders.require(order_id)
 
 

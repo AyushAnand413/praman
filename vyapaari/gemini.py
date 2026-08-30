@@ -87,6 +87,10 @@ class GeminiClient:
         self._api_key = api_key
         self._client: Any = None
 
+    def __repr__(self) -> str:
+        # Never include the API key in repr to avoid leaking secrets in logs.
+        return f"<GeminiClient model={self.model!r}>"
+
     # -- construction ------------------------------------------------------
 
     def _resolve_key(self) -> str:

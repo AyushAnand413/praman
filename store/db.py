@@ -24,7 +24,7 @@ from pathlib import Path
 
 from settings import DATABASE_PATH
 
-#: The 11 tables, in dependency order.
+#: The tables, in dependency order.
 TABLES: tuple[str, ...] = (
     "products",
     "product_private",
@@ -37,6 +37,12 @@ TABLES: tuple[str, ...] = (
     "policy_budgets",
     "approvals",
     "ab_sessions",
+    "pairing_denominators",
+    "pairings",
+    "cluster_pairings",
+    "mec_versions",
+    "transaction_decision_records",
+    "merchants",
 )
 
 SCHEMA_SQL = """
@@ -203,6 +209,10 @@ CREATE TABLE IF NOT EXISTS approvals (
                           CHECK (state IN ('PENDING', 'APPROVED', 'REJECTED', 'COUNTERED')),
     amount_inr        INTEGER NOT NULL,
     counter_amount_inr INTEGER,
+    -- The bounded, signed offer that carries a COUNTERED decision's terms.
+    -- The buyer polls for this and accepts it explicitly; without it the
+    -- negotiation would end in prose instead of on the rail.
+    counter_offer_id   TEXT,
     note              TEXT,
     requested_at      TEXT    NOT NULL,
     decided_at        TEXT,
@@ -223,6 +233,85 @@ CREATE TABLE IF NOT EXISTS ab_sessions (
     created_at     TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_ab_sessions_arm ON ab_sessions (arm);
+
+-- ── learning: what actually sells together ─────────────────────────────────
+-- One row per (store, base item, companion). Counts are decayed lazily with an
+-- exponential half-life on write, so strength is always the recent ratio and a
+-- forgotten habit fades instead of persisting forever. Observed rows come from
+-- completed orders; seeded rows are cold-start priors that observed evidence
+-- replaces on read. store_id is present from day one so multi-store isolation
+-- later is a query discipline, not a migration.
+--
+-- The denominator ("how many baskets contained the base item at all") lives in
+-- its own table keyed by base item alone — a pairing row is about a pair, and
+-- mixing a per-base counter into it via an empty-SKU sentinel would fight the
+-- foreign keys.
+CREATE TABLE IF NOT EXISTS pairing_denominators (
+    store_id   TEXT    NOT NULL DEFAULT 'default',
+    base_sku   TEXT    NOT NULL REFERENCES products (sku) ON DELETE CASCADE,
+    base_count REAL    NOT NULL DEFAULT 0 CHECK (base_count >= 0),
+    updated_at TEXT    NOT NULL,
+    PRIMARY KEY (store_id, base_sku)
+);
+
+CREATE TABLE IF NOT EXISTS pairings (
+    store_id       TEXT    NOT NULL DEFAULT 'default',
+    base_sku       TEXT    NOT NULL REFERENCES products (sku) ON DELETE CASCADE,
+    paired_sku     TEXT    NOT NULL REFERENCES products (sku) ON DELETE CASCADE,
+    source         TEXT    NOT NULL DEFAULT 'observed'
+                       CHECK (source IN ('observed', 'seeded')),
+    together_count REAL    NOT NULL DEFAULT 0 CHECK (together_count >= 0),
+    updated_at     TEXT    NOT NULL,
+    PRIMARY KEY (store_id, base_sku, paired_sku, source)
+);
+CREATE INDEX IF NOT EXISTS idx_pairings_base
+    ON pairings (store_id, base_sku, source);
+
+-- Anonymous category-level priors pooled by stores in the same learning
+-- cluster: "in electronics stores generally, chargers follow phones". Only
+-- category ratios live here — no SKUs, no order details, no identities — so
+-- pooling is competitive-intelligence-safe. A store's own SKU-level data
+-- always overrides these on read.
+CREATE TABLE IF NOT EXISTS cluster_pairings (
+    cluster         TEXT    NOT NULL,
+    base_category   TEXT    NOT NULL,
+    paired_category TEXT    NOT NULL,
+    base_count      REAL    NOT NULL DEFAULT 0 CHECK (base_count >= 0),
+    together_count  REAL    NOT NULL DEFAULT 0 CHECK (together_count >= 0),
+    updated_at      TEXT    NOT NULL,
+    PRIMARY KEY (cluster, base_category, paired_category)
+);
+
+CREATE TABLE IF NOT EXISTS mec_versions (
+    mec_id      TEXT NOT NULL,
+    version     INTEGER NOT NULL,
+    store_id    TEXT NOT NULL,
+    scope       TEXT NOT NULL CHECK (scope IN ('store','category','sku','campaign')),
+    scope_value TEXT,
+    body        TEXT NOT NULL,
+    hash        TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    PRIMARY KEY (mec_id, version)
+);
+CREATE INDEX IF NOT EXISTS idx_mec_store_scope ON mec_versions (store_id, scope, scope_value);
+
+CREATE TABLE IF NOT EXISTS transaction_decision_records (
+    transaction_id  TEXT PRIMARY KEY,
+    tdr_json        TEXT NOT NULL,
+    tdr_hash        TEXT NOT NULL,
+    created_at      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS merchants (
+    merchant_id   TEXT PRIMARY KEY,
+    email         TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    salt_hex      TEXT NOT NULL,
+    store_id      TEXT NOT NULL DEFAULT 'default',
+    active_token  TEXT UNIQUE,
+    created_at    TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_merchants_email_store ON merchants (email, store_id);
 """
 
 _local = threading.local()
@@ -287,6 +376,7 @@ def transaction(conn: sqlite3.Connection | None = None) -> Iterator[sqlite3.Conn
 ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("orders", "stock_hold_ids", "TEXT"),
     ("orders", "budget_reserved_inr", "INTEGER NOT NULL DEFAULT 0"),
+    ("approvals", "counter_offer_id", "TEXT"),
 )
 
 

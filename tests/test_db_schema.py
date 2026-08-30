@@ -1,4 +1,4 @@
-"""Schema shape: all 11 tables exist, and journal_mode is WAL."""
+"""Schema shape: all declared tables exist, and journal_mode is WAL."""
 
 from __future__ import annotations
 
@@ -9,11 +9,11 @@ import pytest
 from store.db import TABLES, existing_tables, journal_mode
 
 
-def test_all_eleven_tables_exist(db):
+def test_all_declared_tables_exist(db):
     present = existing_tables(db)
     missing = [name for name in TABLES if name not in present]
     assert not missing, f"missing tables: {missing}"
-    assert len(TABLES) == 11
+    assert len(TABLES) == 17
 
 
 def test_journal_mode_is_wal(db):

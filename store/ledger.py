@@ -210,12 +210,29 @@ def get(seq: int, conn: sqlite3.Connection | None = None) -> LedgerEntry | None:
     return _row_to_entry(row) if row else None
 
 
-def recent(limit: int = 50, conn: sqlite3.Connection | None = None) -> list[LedgerEntry]:
-    """Newest entries first — the dashboard's live feed."""
+def recent(
+    limit: int = 50,
+    conn: sqlite3.Connection | None = None,
+    before_seq: int | None = None,
+) -> list[LedgerEntry]:
+    """Newest entries first — the dashboard's live feed.
+
+    `before_seq` pages backwards, returning only entries strictly older than
+    that seq. It is a keyset cursor rather than a numeric offset because entries
+    arrive while a merchant is reading: with OFFSET, a new row at the head
+    shifts every later page down one and the reader sees a row twice or not at
+    all. `seq` is monotonic, so a cursor cannot drift.
+    """
     conn = conn or get_connection()
-    rows = conn.execute(
-        "SELECT * FROM ledger ORDER BY seq DESC LIMIT ?", (int(limit),)
-    ).fetchall()
+    if before_seq is None:
+        rows = conn.execute(
+            "SELECT * FROM ledger ORDER BY seq DESC LIMIT ?", (int(limit),)
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM ledger WHERE seq < ? ORDER BY seq DESC LIMIT ?",
+            (int(before_seq), int(limit)),
+        ).fetchall()
     return [_row_to_entry(row) for row in rows]
 
 
