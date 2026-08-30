@@ -94,28 +94,28 @@ def test_tenancy_cluster_cache():
 
 # 7. Dashboard protected endpoint rejects bad key (401) and missing key (401)
 def test_dashboard_rejects_bad_key():
-    client = _client()
-    # No key -> 401
-    r = client.get("/merchant/v1/dashboard")
-    assert r.status_code == 401
-    # Wrong key -> 401
-    r = client.get("/merchant/v1/dashboard", headers={"X-Merchant-Key": "wrong"})
-    assert r.status_code == 401
+    with _client() as client:
+        # No key -> 401
+        r = client.get("/merchant/v1/dashboard")
+        assert r.status_code == 401
+        # Wrong key -> 401
+        r = client.get("/merchant/v1/dashboard", headers={"X-Merchant-Key": "wrong"})
+        assert r.status_code == 401
 
 
 # 8. Dashboard with correct key returns 200 (when DEMO_KEY set in env/test)
 def test_dashboard_with_demo_key():
     import os
     os.environ["DEMO_KEY"] = os.environ.get("DEMO_KEY", "test-demo-key")
-    client = _client()
     # Need to bootstrap expected key
     from settings import secret
     try:
         expected = secret("DEMO_KEY").reveal()
     except Exception:
         expected = "test-demo-key"
-    r = client.get("/merchant/v1/dashboard", headers={"X-Merchant-Key": expected})
-    assert r.status_code in (200, 503)  # 503 if DEMO_KEY still missing in this context
+    with _client() as client:
+        r = client.get("/merchant/v1/dashboard", headers={"X-Merchant-Key": expected})
+        assert r.status_code in (200, 503)  # 503 if DEMO_KEY still missing in this context
 
 
 # 9. DB TABLES count matches schema creation
