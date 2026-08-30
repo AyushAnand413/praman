@@ -34,7 +34,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Deploy to Dev (Vercel)
-        run: echo "Deploy dev: vercel --prod --env dev (requires VERCEL_TOKEN)" && echo "Add VERCEL_TOKEN + VERCEL_PROJECT_ID in GitHub Secrets, then: vercel deploy --prebuilt --prod"
+        run: |
+          echo "Deploy dev: vercel --prod --env dev (requires VERCEL_TOKEN)" && echo "Add VERCEL_TOKEN + VERCEL_PROJECT_ID in GitHub Secrets, then: vercel deploy --prebuilt --prod"
 
   deploy-staging:
     if: github.event_name == 'push' && github.ref == 'refs/heads/staging'
@@ -43,4 +44,5 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Deploy to Staging (Vercel)
-        run: echo "Deploy staging: vercel --prod --env staging (requires VERCEL_TOKEN)" && echo "Configure staging DATABASE_URL in Vercel env"
+        run: |
+          echo "Deploy staging: vercel --prod --env staging (requires VERCEL_TOKEN)" && echo "Configure staging DATABASE_URL in Vercel env"
