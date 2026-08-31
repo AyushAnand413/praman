@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main, dev, staging, ui-changes]
+  push:
+    branches: [dev, staging, main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - name: Install Python deps
+        run: pip install -r requirements.txt
+      - name: Run hermetic tests
+        run: python -m pytest -q
+      - name: Build dashboard
+        working-directory: dashboard
+        run: npm ci && npm run build
+
+  deploy-dev:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy to Dev (Vercel)
+        run: |
+          echo "Deploy dev: vercel --prod --env dev (requires VERCEL_TOKEN)" && echo "Add VERCEL_TOKEN + VERCEL_PROJECT_ID in GitHub Secrets, then: vercel deploy --prebuilt --prod"
+
+  deploy-staging:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/staging'
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy to Staging (Vercel)
+        run: |
+          echo "Deploy staging: vercel --prod --env staging (requires VERCEL_TOKEN)" && echo "Configure staging DATABASE_URL in Vercel env"
