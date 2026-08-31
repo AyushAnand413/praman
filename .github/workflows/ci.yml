@@ -52,7 +52,7 @@ jobs:
     env:
       DATABASE_URL: postgresql://bazaar:bazaar@localhost:5432/bazaar_test
       POLICY_RECEIPT_HMAC_SECRET: test-hmac-secret-do-not-use-anywhere-real
-      MANDATE_SIGNING_SEED: "11" * 64
+      MANDATE_SIGNING_SEED: "1111111111111111111111111111111111111111111111111111111111111111"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
