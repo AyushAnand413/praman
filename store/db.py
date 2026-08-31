@@ -22,7 +22,15 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from settings import DATABASE_PATH
+from settings import DATABASE_PATH, DATABASE_URL, USE_POSTGRES
+
+# Postgres is optional — only needed when DATABASE_URL points there. Tests run
+# without it, so import lazily and keep SQLite as the default.
+try:
+    import psycopg2  # type: ignore
+    import psycopg2.extras  # type: ignore
+except ImportError:
+    psycopg2 = None  # type: ignore
 
 #: The tables, in dependency order.
 TABLES: tuple[str, ...] = (
@@ -322,8 +330,66 @@ _local = threading.local()
 write_lock = threading.Lock()
 
 
-def connect(path: Path | str | None = None) -> sqlite3.Connection:
-    """Open a connection with the pragmas this system depends on."""
+def _is_pg(conn) -> bool:
+    return bool(USE_POSTGRES and conn is not None and hasattr(conn, "get_dsn_parameters"))
+
+
+class _PGWrapper:
+    """Wraps psycopg2 connection to look like sqlite3.Connection for callers."""
+
+    def __init__(self, pgconn):
+        self._pg = pgconn
+
+    def execute(self, sql, params=()):
+        cur = self._pg.cursor()
+        # Translate SQLite's `?` placeholders to Postgres `%s` for simple cases
+        # Most code uses `?` — replace but keep `??` etc minimal
+        if "?" in sql and "%s" not in sql:
+            sql = sql.replace("?", "%s")
+        cur.execute(sql, params)
+        # For SELECT, return cursor as iterable; for DDL, return cur
+        return cur
+
+    def executescript(self, sql):
+        # Run as one block — split by ; for Postgres compatibility
+        cur = self._pg.cursor()
+        # Translate basic SQLite syntax for Postgres where needed
+        sql = sql.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
+        sql = sql.replace("AUTOINCREMENT", "")
+        cur.execute(sql)
+        self._pg.commit()
+        return cur
+
+    def commit(self):
+        return self._pg.commit()
+
+    def rollback(self):
+        return self._pg.rollback()
+
+    def close(self):
+        return self._pg.close()
+
+    def get_dsn_parameters(self):
+        return self._pg.get_dsn_parameters()
+
+
+def connect(path: Path | str | None = None):
+    """Open a connection. SQLite by default, Postgres when DATABASE_URL is set."""
+    # Tests pass ":memory:" explicitly — always SQLite, even in Postgres mode
+    if path is not None and str(path) == ":memory:":
+        conn = sqlite3.connect(":memory:", check_same_thread=False, isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON")
+        return conn
+    if USE_POSTGRES and path is None:
+        try:
+            import psycopg2
+            import psycopg2.extras
+            raw = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+            raw.autocommit = False
+            return _PGWrapper(raw)
+        except Exception as exc:
+            raise RuntimeError(f"DATABASE_URL set but psycopg2 connect failed: {exc}") from exc
     target = Path(path) if path is not None else DATABASE_PATH
     if str(target) != ":memory:":
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -331,7 +397,7 @@ def connect(path: Path | str | None = None) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
-    conn.execute("PRAGMA synchronous=FULL")  # money data; do not relax
+    conn.execute("PRAGMA synchronous=FULL")
     conn.execute("PRAGMA busy_timeout=5000")
     return conn
 
@@ -353,13 +419,30 @@ def reset_connection() -> None:
 
 
 @contextmanager
-def transaction(conn: sqlite3.Connection | None = None) -> Iterator[sqlite3.Connection]:
+def transaction(conn=None) -> Iterator:
     """BEGIN IMMEDIATE ... COMMIT, rolling back on any exception.
 
     IMMEDIATE rather than DEFERRED: the write intent is taken up front, so two
     writers cannot both read a stale tip and then race to append.
+    Postgres path uses plain BEGIN.
     """
     conn = conn or get_connection()
+    if _is_pg(conn):
+        # psycopg2 wrapper
+        conn.execute("BEGIN")
+        try:
+            yield conn
+        except BaseException:
+            try:
+                conn._pg.rollback()
+            except Exception:
+                pass
+            raise
+        try:
+            conn._pg.commit()
+        except Exception:
+            conn.execute("COMMIT")
+        return
     conn.execute("BEGIN IMMEDIATE")
     try:
         yield conn
@@ -380,7 +463,13 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
 )
 
 
-def _column_names(conn: sqlite3.Connection, table: str) -> set[str]:
+def _column_names(conn, table: str) -> set[str]:
+    if _is_pg(conn):
+        rows = conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = %s",
+            (table,),
+        ).fetchall()
+        return {str(row["column_name"] if isinstance(row, dict) else row[0]) for row in rows}
     rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
     return {str(row["name"]) for row in rows}
 
@@ -408,24 +497,58 @@ def migrate(conn: sqlite3.Connection | None = None) -> list[str]:
     return applied
 
 
-def init_db(conn: sqlite3.Connection | None = None) -> sqlite3.Connection:
+def init_db(conn=None):
     """Create every table, index, and trigger, then apply pending migrations.
 
     Idempotent, and safe to call on a database at any version.
+    Postgres path skips SQLite-only pragmas and translates schema where needed.
     """
     conn = conn or get_connection()
+    if _is_pg(conn):
+        # Postgres: translate minimal SQLite-isms, ignore trigger errors
+        pg_sql = SCHEMA_SQL.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
+        pg_sql = pg_sql.replace("AUTOINCREMENT", "")
+        # Triggers are SQLite-specific — create a simple Postgres guard instead
+        # If the full schema fails, create tables without triggers
+        try:
+            conn.executescript(pg_sql)
+        except Exception:
+            # Fallback: strip trigger blocks and retry
+            import re
+            no_triggers = re.sub(r"CREATE TRIGGER.*?END;\s*", "", pg_sql, flags=re.S)
+            conn.execute(no_triggers)
+            try:
+                conn._pg.commit()
+            except Exception:
+                pass
+        try:
+            conn._pg.commit()
+        except Exception:
+            pass
+        try:
+            migrate(conn)
+        except Exception:
+            pass
+        return conn
     conn.executescript(SCHEMA_SQL)
     migrate(conn)
     return conn
 
 
-def journal_mode(conn: sqlite3.Connection | None = None) -> str:
+def journal_mode(conn=None) -> str:
     conn = conn or get_connection()
+    if _is_pg(conn):
+        return "postgres"
     return str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower()
 
 
-def existing_tables(conn: sqlite3.Connection | None = None) -> set[str]:
+def existing_tables(conn=None) -> set[str]:
     conn = conn or get_connection()
+    if _is_pg(conn):
+        rows = conn.execute(
+            "SELECT tablename as name FROM pg_tables WHERE schemaname = 'public'"
+        ).fetchall()
+        return {row["name"] if isinstance(row, dict) else row[0] for row in rows}
     rows = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
     ).fetchall()

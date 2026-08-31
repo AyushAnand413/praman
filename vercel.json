@@ -1,0 +1,18 @@
+{
+  "functions": {
+    "api/index.py": {
+      "maxDuration": 10
+    }
+  },
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/api/index.py" }
+  ],
+  "env": {
+    "DATABASE_URL": "@database_url",
+    "RAZORPAY_KEY_ID": "@razorpay_key_id",
+    "RAZORPAY_KEY_SECRET": "@razorpay_key_secret",
+    "POLICY_RECEIPT_HMAC_SECRET": "@policy_secret",
+    "MANDATE_SIGNING_SEED": "@mandate_seed",
+    "GEMINI_API_KEY": "@gemini_key"
+  }
+}
