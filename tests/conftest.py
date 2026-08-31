@@ -160,6 +160,37 @@ def counting_gemini(live_gemini):
 @pytest.fixture
 def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[sqlite3.Connection]:
     """A fresh database with the schema and the 14 seeded SKUs."""
+    from settings import USE_POSTGRES
+
+    if USE_POSTGRES:
+        # Postgres tests share one database (DATABASE_URL) - truncate to isolate
+        from store.db import TABLES
+
+        db_module.reset_connection()
+        conn = db_module.get_connection()
+        db_module.init_db(conn)
+        # Truncate all tables to get isolation like SQLite :memory: per test
+        with db_module.transaction(conn):
+            for table in reversed(TABLES):
+                try:
+                    conn.execute(f"TRUNCATE {table} CASCADE")
+                except Exception:
+                    try:
+                        conn.execute(f"DELETE FROM {table}")
+                    except Exception:
+                        pass
+        try:
+            conn.execute("COMMIT")
+        except Exception:
+            pass
+        catalog_module.seed_database(conn=conn)
+        catalog_module.cache.load(conn)
+        try:
+            yield conn
+        finally:
+            db_module.reset_connection()
+        return
+
     path = tmp_path / "test.db"
     # store.db binds DATABASE_PATH at import, so patch it there, not in settings.
     monkeypatch.setattr(db_module, "DATABASE_PATH", path)

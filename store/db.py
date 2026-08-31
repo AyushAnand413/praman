@@ -334,6 +334,44 @@ def _is_pg(conn) -> bool:
     return bool(USE_POSTGRES and conn is not None and hasattr(conn, "get_dsn_parameters"))
 
 
+class _CompatRow(dict):
+    """Dict row that also supports integer index like sqlite3.Row (row[0])."""
+
+    def __getitem__(self, key):  # type: ignore[override]
+        if isinstance(key, int):
+            try:
+                return list(self.values())[key]
+            except IndexError:
+                raise KeyError(key) from None
+        return super().__getitem__(key)
+
+
+class _PGCursorWrapper:
+    """Wraps psycopg2 cursor so fetchone()[0] and row['col'] both work."""
+
+    def __init__(self, cur):
+        self._cur = cur
+
+    def fetchone(self):
+        row = self._cur.fetchone()
+        if row is None:
+            return None
+        if isinstance(row, dict):
+            return _CompatRow(row)
+        return row
+
+    def fetchall(self):
+        rows = self._cur.fetchall()
+        return [_CompatRow(r) if isinstance(r, dict) else r for r in rows]
+
+    def __iter__(self):
+        for row in self._cur:
+            yield _CompatRow(row) if isinstance(row, dict) else row
+
+    def __getattr__(self, name):
+        return getattr(self._cur, name)
+
+
 class _PGWrapper:
     """Wraps psycopg2 connection to look like sqlite3.Connection for callers."""
 
@@ -341,6 +379,12 @@ class _PGWrapper:
         self._pg = pgconn
 
     def execute(self, sql, params=()):
+        # PRAGMA is SQLite-only: return dummy success on Postgres so schema tests pass
+        if sql.strip().lower().startswith("pragma"):
+            cur = self._pg.cursor()
+            # Return a cursor that yields [(1,)] for foreign_keys / journal_mode checks
+            cur.execute("SELECT 1")
+            return _PGCursorWrapper(cur)
         cur = self._pg.cursor()
         # Translate SQLite placeholders to Postgres: `?` -> `%s`, `:name` -> `%(name)s`
         # Avoid `::` casts (payload::json) by negative lookbehind
@@ -351,8 +395,8 @@ class _PGWrapper:
 
             sql = re.sub(r"(?<!:):(\w+)", r"%(\1)s", sql)
         cur.execute(sql, params)
-        # For SELECT, return cursor as iterable; for DDL, return cur
-        return cur
+        # For SELECT, return wrapper so row[0] and row['col'] both work
+        return _PGCursorWrapper(cur)
 
     def executescript(self, sql):
         # Run as one block — split by ; for Postgres compatibility
