@@ -1,8 +1,7 @@
 """Shared pytest fixtures.
 
-Every test runs against a throwaway SQLite file, never the working database —
-the ledger is append-only, so a test that tampered with the real one would
-leave it permanently broken.
+Every test runs against Postgres (Neon) with TRUNCATE isolation — ledger is
+append-only so a test never pollutes the next.
 """
 
 from __future__ import annotations
@@ -17,8 +16,6 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
-
-import sqlite3  # noqa: E402
 
 from store import catalog as catalog_module  # noqa: E402
 from store import db as db_module  # noqa: E402
@@ -158,46 +155,27 @@ def counting_gemini(live_gemini):
 
 
 @pytest.fixture
-def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[sqlite3.Connection]:
-    """A fresh database with the schema and the 14 seeded SKUs."""
-    from settings import USE_POSTGRES
+def db(monkeypatch: pytest.MonkeyPatch) -> Iterator:
+    """A fresh database with the schema and the 14 seeded SKUs. Postgres-only."""
+    from store.db import TABLES
 
-    if USE_POSTGRES:
-        # Postgres tests share one database (DATABASE_URL) - truncate to isolate
-        from store.db import TABLES
-
-        db_module.reset_connection()
-        conn = db_module.get_connection()
-        db_module.init_db(conn)
-        # Truncate all tables to get isolation like SQLite :memory: per test
-        with db_module.transaction(conn):
-            for table in reversed(TABLES):
-                try:
-                    conn.execute(f"TRUNCATE {table} CASCADE")
-                except Exception:
-                    try:
-                        conn.execute(f"DELETE FROM {table}")
-                    except Exception:
-                        pass
-        try:
-            conn.execute("COMMIT")
-        except Exception:
-            pass
-        catalog_module.seed_database(conn=conn)
-        catalog_module.cache.load(conn)
-        try:
-            yield conn
-        finally:
-            db_module.reset_connection()
-        return
-
-    path = tmp_path / "test.db"
-    # store.db binds DATABASE_PATH at import, so patch it there, not in settings.
-    monkeypatch.setattr(db_module, "DATABASE_PATH", path)
     db_module.reset_connection()
-
     conn = db_module.get_connection()
     db_module.init_db(conn)
+    # Truncate all tables to get isolation (Postgres shared DB)
+    with db_module.transaction(conn):
+        for table in reversed(TABLES):
+            try:
+                conn.execute(f"TRUNCATE {table} CASCADE")
+            except Exception:
+                try:
+                    conn.execute(f"DELETE FROM {table}")
+                except Exception:
+                    pass
+    try:
+        conn.execute("COMMIT")
+    except Exception:
+        pass
     catalog_module.seed_database(conn=conn)
     catalog_module.cache.load(conn)
     try:
@@ -207,7 +185,7 @@ def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[sqlite3.Conn
 
 
 @pytest.fixture
-def client(db: sqlite3.Connection):
+def client(db):
     """TestClient over the real app factory, bound to the throwaway database."""
     from fastapi.testclient import TestClient
 
