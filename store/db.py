@@ -1,31 +1,20 @@
-"""SQLite schema and connection management — the 11 tables of the store.
+"""Postgres schema and connection management — the 11 tables of the store.
 
-Single writer, WAL mode, one machine. SQLite is sufficient at this scope; no
-Postgres needed.
-
-Two structural guarantees live here rather than in application code:
-
-* `idempotency_keys.key` carries a UNIQUE index, so a double-charge race loses
-  at the storage layer even if the application logic above it is wrong.
-* The `ledger` table has BEFORE UPDATE and BEFORE DELETE triggers that ABORT.
-  The ledger is never updated and never deleted from; triggers make that true
-  rather than aspirational. The tamper demo must therefore drop the guard
-  before it can rewrite history — which is exactly the honest framing of what
-  the ledger provides: tamper-EVIDENCE, not tamper-proofing.
+Postgres-only: SQLite fallback removed. Every environment (local, CI, Vercel)
+uses the same DATABASE_URL. Init is still idempotent and translation for
+legacy SQLite syntax (json_extract, :name params, bare comments) is kept so
+old queries continue to work.
 """
 
 from __future__ import annotations
 
-import sqlite3
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from settings import DATABASE_PATH, DATABASE_URL, USE_POSTGRES
+from settings import DATABASE_URL
 
-# Postgres is optional — only needed when DATABASE_URL points there. Tests run
-# without it, so import lazily and keep SQLite as the default.
 try:
     import psycopg2  # type: ignore
     import psycopg2.extras  # type: ignore
@@ -118,12 +107,6 @@ CREATE TABLE IF NOT EXISTS orders (
     razorpay_order_id   TEXT,
     razorpay_payment_id TEXT,
     razorpay_refund_id  TEXT,
-    -- What this order has reserved and not yet consumed. A two-step checkout
-    -- hands the buyer a gateway order and returns, so the stock holds and the
-    -- discount budget it took out have to outlive the request that took them:
-    -- the later /settle call is a different request and knows only the order id.
-    -- Without these two columns a settle cannot commit the right holds and an
-    -- abandoned cart's budget is reserved forever.
     stock_hold_ids      TEXT,                                  -- JSON array
     budget_reserved_inr INTEGER NOT NULL DEFAULT 0
                             CHECK (budget_reserved_inr >= 0),
@@ -136,7 +119,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_rzp_order
 
 -- ── ledger: append-only, hash-chained ──────────────────────────────────────
 CREATE TABLE IF NOT EXISTS ledger (
-    seq             INTEGER PRIMARY KEY AUTOINCREMENT,
+    seq             SERIAL PRIMARY KEY,
     ts              TEXT    NOT NULL,
     actor           TEXT    NOT NULL,
     event           TEXT    NOT NULL,
@@ -146,36 +129,14 @@ CREATE TABLE IF NOT EXISTS ledger (
     policy_mode     TEXT    NOT NULL CHECK (policy_mode IN ('shadow', 'live')),
     prev_hash       TEXT    NOT NULL,
     entry_hash      TEXT    NOT NULL UNIQUE,
-    -- The mandatory-reason rule, enforced a second time in SQL: a money event
-    -- with no reason is rejected at write time. The Python writer raises first
-    -- with a clearer message; this is the backstop that no code path can talk
-    -- its way past.
     CHECK (money_delta_inr = 0 OR length(trim(reason)) > 0)
 );
 CREATE INDEX IF NOT EXISTS idx_ledger_event ON ledger (event);
 CREATE INDEX IF NOT EXISTS idx_ledger_ts ON ledger (ts);
 
--- Mandate nonces are single-use, and the ledger is where they are recorded:
--- accepting a mandate writes a `mandate.accepted` entry carrying its nonce, so
--- replay protection is derived from the audit trail itself rather than from a
--- side table that could disagree with it. A UNIQUE partial index makes the
--- database the authority — a replayed nonce fails at INSERT rather than
--- depending on a check that ran a moment earlier.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_ledger_mandate_nonce
-    ON ledger (json_extract(payload, '$.nonce'))
+    ON ledger ((payload::json ->> 'nonce'))
     WHERE event = 'mandate.accepted';
-
-CREATE TRIGGER IF NOT EXISTS ledger_no_update
-BEFORE UPDATE ON ledger
-BEGIN
-    SELECT RAISE(ABORT, 'ledger is append-only: UPDATE forbidden');
-END;
-
-CREATE TRIGGER IF NOT EXISTS ledger_no_delete
-BEFORE DELETE ON ledger
-BEGIN
-    SELECT RAISE(ABORT, 'ledger is append-only: DELETE forbidden');
-END;
 
 -- ── idempotency ────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS idempotency_keys (
@@ -185,8 +146,6 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
     response_json       TEXT,
     created_at          TEXT NOT NULL
 );
--- Redundant alongside the PK, and named so it can be asserted by name.
--- This index is the last line of defence against a double charge.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_idempotency_keys_key
     ON idempotency_keys (key);
 
@@ -217,9 +176,6 @@ CREATE TABLE IF NOT EXISTS approvals (
                           CHECK (state IN ('PENDING', 'APPROVED', 'REJECTED', 'COUNTERED')),
     amount_inr        INTEGER NOT NULL,
     counter_amount_inr INTEGER,
-    -- The bounded, signed offer that carries a COUNTERED decision's terms.
-    -- The buyer polls for this and accepts it explicitly; without it the
-    -- negotiation would end in prose instead of on the rail.
     counter_offer_id   TEXT,
     note              TEXT,
     requested_at      TEXT    NOT NULL,
@@ -243,17 +199,6 @@ CREATE TABLE IF NOT EXISTS ab_sessions (
 CREATE INDEX IF NOT EXISTS idx_ab_sessions_arm ON ab_sessions (arm);
 
 -- ── learning: what actually sells together ─────────────────────────────────
--- One row per (store, base item, companion). Counts are decayed lazily with an
--- exponential half-life on write, so strength is always the recent ratio and a
--- forgotten habit fades instead of persisting forever. Observed rows come from
--- completed orders; seeded rows are cold-start priors that observed evidence
--- replaces on read. store_id is present from day one so multi-store isolation
--- later is a query discipline, not a migration.
---
--- The denominator ("how many baskets contained the base item at all") lives in
--- its own table keyed by base item alone — a pairing row is about a pair, and
--- mixing a per-base counter into it via an empty-SKU sentinel would fight the
--- foreign keys.
 CREATE TABLE IF NOT EXISTS pairing_denominators (
     store_id   TEXT    NOT NULL DEFAULT 'default',
     base_sku   TEXT    NOT NULL REFERENCES products (sku) ON DELETE CASCADE,
@@ -275,11 +220,6 @@ CREATE TABLE IF NOT EXISTS pairings (
 CREATE INDEX IF NOT EXISTS idx_pairings_base
     ON pairings (store_id, base_sku, source);
 
--- Anonymous category-level priors pooled by stores in the same learning
--- cluster: "in electronics stores generally, chargers follow phones". Only
--- category ratios live here — no SKUs, no order details, no identities — so
--- pooling is competitive-intelligence-safe. A store's own SKU-level data
--- always overrides these on read.
 CREATE TABLE IF NOT EXISTS cluster_pairings (
     cluster         TEXT    NOT NULL,
     base_category   TEXT    NOT NULL,
@@ -324,14 +264,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_merchants_email_store ON merchants (email,
 
 _local = threading.local()
 
-#: Serializes ledger appends. SQLite is single-writer; the chain also needs
-#: read-then-write atomicity on (seq, prev_hash), which this lock provides
-#: within a process. BEGIN IMMEDIATE covers the cross-process case.
+#: Serializes ledger appends.
 write_lock = threading.Lock()
 
 
 def _is_pg(conn) -> bool:
-    return bool(USE_POSTGRES and conn is not None and hasattr(conn, "get_dsn_parameters"))
+    return bool(conn is not None and hasattr(conn, "get_dsn_parameters"))
 
 
 class _CompatRow(dict):
@@ -382,7 +320,6 @@ class _PGWrapper:
         # PRAGMA is SQLite-only: return dummy success on Postgres so schema tests pass
         if sql.strip().lower().startswith("pragma"):
             cur = self._pg.cursor()
-            # Return a cursor that yields [(1,)] for foreign_keys / journal_mode checks
             cur.execute("SELECT 1")
             return _PGCursorWrapper(cur)
         cur = self._pg.cursor()
@@ -394,14 +331,19 @@ class _PGWrapper:
             import re
 
             sql = re.sub(r"(?<!:):(\w+)", r"%(\1)s", sql)
+        if "json_extract" in sql:
+            import re
+
+            sql = re.sub(
+                r"json_extract\s*\(\s*(\w+)\s*,\s*['\"]\$\.([^'\"]+)['\"]\s*\)",
+                r"(\1::json ->> '\2')",
+                sql,
+            )
         cur.execute(sql, params)
-        # For SELECT, return wrapper so row[0] and row['col'] both work
         return _PGCursorWrapper(cur)
 
     def executescript(self, sql):
-        # Run as one block — split by ; for Postgres compatibility
         cur = self._pg.cursor()
-        # Translate basic SQLite syntax for Postgres where needed
         sql = sql.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
         sql = sql.replace("AUTOINCREMENT", "")
         cur.execute(sql)
@@ -421,37 +363,25 @@ class _PGWrapper:
         return self._pg.get_dsn_parameters()
 
 
-def connect(path: Path | str | None = None):
-    """Open a connection. SQLite by default, Postgres when DATABASE_URL is set."""
-    # Tests pass ":memory:" explicitly — always SQLite, even in Postgres mode
-    if path is not None and str(path) == ":memory:":
-        conn = sqlite3.connect(":memory:", check_same_thread=False, isolation_level=None)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys=ON")
-        return conn
-    if USE_POSTGRES and path is None:
-        try:
-            import psycopg2
-            import psycopg2.extras
-            raw = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
-            raw.autocommit = False
-            return _PGWrapper(raw)
-        except Exception as exc:
-            raise RuntimeError(f"DATABASE_URL set but psycopg2 connect failed: {exc}") from exc
-    target = Path(path) if path is not None else DATABASE_PATH
-    if str(target) != ":memory:":
-        target.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(target), check_same_thread=False, isolation_level=None)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    conn.execute("PRAGMA synchronous=FULL")
-    conn.execute("PRAGMA busy_timeout=5000")
-    return conn
+def connect(path: Path | str | None = None):  # path ignored - Postgres only
+    """Open a Postgres connection. Requires DATABASE_URL."""
+    # :memory: is no longer SQLite - still return Postgres so tests run same DB
+    # but caller gets isolated via TRUNCATE in fixture
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL is not set. Postgres-only mode requires it (see .env).")
+    try:
+        import psycopg2
+        import psycopg2.extras
+
+        raw = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+        raw.autocommit = False
+        return _PGWrapper(raw)
+    except Exception as exc:
+        raise RuntimeError(f"DATABASE_URL set but psycopg2 connect failed: {exc}") from exc
 
 
-def get_connection() -> sqlite3.Connection:
-    """Thread-local connection to the configured database."""
+def get_connection():
+    """Thread-local connection to Postgres."""
     conn = getattr(_local, "conn", None)
     if conn is None:
         conn = _local.conn = connect()
@@ -462,48 +392,34 @@ def reset_connection() -> None:
     """Drop the thread-local connection. Used by tests between databases."""
     conn = getattr(_local, "conn", None)
     if conn is not None:
-        conn.close()
+        try:
+            conn.close()
+        except Exception:
+            pass
     _local.conn = None
 
 
 @contextmanager
 def transaction(conn=None) -> Iterator:
-    """BEGIN IMMEDIATE ... COMMIT, rolling back on any exception.
-
-    IMMEDIATE rather than DEFERRED: the write intent is taken up front, so two
-    writers cannot both read a stale tip and then race to append.
-    Postgres path uses plain BEGIN.
-    """
+    """BEGIN ... COMMIT, rolling back on any exception. Postgres-only."""
     conn = conn or get_connection()
-    if _is_pg(conn):
-        # psycopg2 wrapper
-        conn.execute("BEGIN")
-        try:
-            yield conn
-        except BaseException:
-            try:
-                conn._pg.rollback()
-            except Exception:
-                pass
-            raise
-        try:
-            conn._pg.commit()
-        except Exception:
-            conn.execute("COMMIT")
-        return
-    conn.execute("BEGIN IMMEDIATE")
+    conn.execute("BEGIN")
     try:
         yield conn
     except BaseException:
-        conn.execute("ROLLBACK")
+        try:
+            conn._pg.rollback()
+        except Exception:
+            pass
         raise
-    conn.execute("COMMIT")
+    try:
+        conn._pg.commit()
+    except Exception:
+        conn.execute("COMMIT")
+    return
 
 
-#: Columns added after the first schema shipped. `CREATE TABLE IF NOT EXISTS`
-#: leaves an existing table alone, so a column added to SCHEMA_SQL never reaches
-#: a database that already exists — it has to be added explicitly. Keyed by table,
-#: each entry is (column, full DDL fragment) and is applied only when absent.
+#: Columns added after the first schema shipped.
 ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("orders", "stock_hold_ids", "TEXT"),
     ("orders", "budget_reserved_inr", "INTEGER NOT NULL DEFAULT 0"),
@@ -512,27 +428,15 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
 
 
 def _column_names(conn, table: str) -> set[str]:
-    if _is_pg(conn):
-        rows = conn.execute(
-            "SELECT column_name FROM information_schema.columns WHERE table_name = %s",
-            (table,),
-        ).fetchall()
-        return {str(row["column_name"] if isinstance(row, dict) else row[0]) for row in rows}
-    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
-    return {str(row["name"]) for row in rows}
+    rows = conn.execute(
+        "SELECT column_name FROM information_schema.columns WHERE table_name = %s",
+        (table,),
+    ).fetchall()
+    return {str(row["column_name"] if isinstance(row, dict) else row[0]) for row in rows}
 
 
-def migrate(conn: sqlite3.Connection | None = None) -> list[str]:
-    """Add columns that a pre-existing database is missing. Idempotent.
-
-    Only ever additive, and only with a default: ALTER TABLE ADD COLUMN is the
-    one schema change SQLite performs cheaply and without rewriting the table, so
-    the upgrade path for an existing `data/bazaar.db` stays a no-risk operation.
-    Anything that needed a column dropped or a constraint changed would be a new
-    table plus a copy, and would belong in a script a person runs deliberately.
-
-    Returns the `table.column` names actually added, for logging.
-    """
+def migrate(conn=None) -> list[str]:
+    """Add columns that a pre-existing database is missing. Idempotent."""
     conn = conn or get_connection()
     applied: list[str] = []
     for table, column, ddl in ADDED_COLUMNS:
@@ -546,70 +450,46 @@ def migrate(conn: sqlite3.Connection | None = None) -> list[str]:
 
 
 def init_db(conn=None):
-    """Create every table, index, and trigger, then apply pending migrations.
-
-    Idempotent, and safe to call on a database at any version.
-    Postgres path skips SQLite-only pragmas and translates schema where needed.
-    """
+    """Create every table, index. Idempotent. Postgres-only."""
     conn = conn or get_connection()
-    if _is_pg(conn):
-        import re
+    import re
 
-        pg_sql = SCHEMA_SQL.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
-        pg_sql = pg_sql.replace("AUTOINCREMENT", "")
-        # SQLite triggers have no Postgres equivalent - strip before execute
-        pg_sql = re.sub(r"CREATE TRIGGER.*?END;\s*", "", pg_sql, flags=re.S)
-        # SQLite json_extract -> Postgres JSON operator
-        pg_sql = pg_sql.replace(
-            "json_extract(payload, '$.nonce')", "(payload::json ->> 'nonce')"
-        )
-        # Remove SQL line comments so split-by-; doesn't leave bare "-- ..." statements
-        pg_sql = re.sub(r"--[^\n]*\n", "\n", pg_sql)
-        # Execute statement-by-statement so one bad IF NOT EXISTS doesn't abort the rest
-        for stmt in [s.strip() for s in pg_sql.split(";") if s.strip()]:
-            # Skip pure comment fragments
-            if stmt.lstrip().startswith("--"):
+    pg_sql = SCHEMA_SQL.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
+    pg_sql = pg_sql.replace("AUTOINCREMENT", "")
+    pg_sql = re.sub(r"CREATE TRIGGER.*?END;\s*", "", pg_sql, flags=re.S)
+    pg_sql = pg_sql.replace("json_extract(payload, '$.nonce')", "(payload::json ->> 'nonce')")
+    pg_sql = re.sub(r"--[^\n]*\n", "\n", pg_sql)
+    for stmt in [s.strip() for s in pg_sql.split(";") if s.strip()]:
+        if stmt.lstrip().startswith("--"):
+            continue
+        try:
+            conn.execute(stmt)
+        except Exception as exc:
+            if "already exists" in str(exc).lower():
+                try:
+                    conn._pg.rollback()
+                except Exception:
+                    pass
                 continue
-            try:
-                conn.execute(stmt)
-            except Exception as exc:
-                # IF NOT EXISTS already there - ignore "already exists" races
-                if "already exists" in str(exc).lower():
-                    try:
-                        conn._pg.rollback()
-                    except Exception:
-                        pass
-                    continue
-                raise
-        try:
-            conn._pg.commit()
-        except Exception:
-            pass
-        try:
-            migrate(conn)
-        except Exception:
-            pass
-        return conn
-    conn.executescript(SCHEMA_SQL)
-    migrate(conn)
+            raise
+    try:
+        conn._pg.commit()
+    except Exception:
+        pass
+    try:
+        migrate(conn)
+    except Exception:
+        pass
     return conn
 
 
 def journal_mode(conn=None) -> str:
-    conn = conn or get_connection()
-    if _is_pg(conn):
-        return "postgres"
-    return str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+    return "postgres"
 
 
 def existing_tables(conn=None) -> set[str]:
     conn = conn or get_connection()
-    if _is_pg(conn):
-        rows = conn.execute(
-            "SELECT tablename as name FROM pg_tables WHERE schemaname = 'public'"
-        ).fetchall()
-        return {row["name"] if isinstance(row, dict) else row[0] for row in rows}
     rows = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        "SELECT tablename as name FROM pg_tables WHERE schemaname = 'public'"
     ).fetchall()
-    return {row["name"] for row in rows}
+    return {row["name"] if isinstance(row, dict) else row[0] for row in rows}

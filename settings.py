@@ -32,15 +32,11 @@ BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.environ.get("DATA_DIR") or BASE_DIR / "data")
 CATALOG_PATH = Path(os.environ.get("CATALOG_PATH") or BASE_DIR / "catalog.json")
 
-# SQLite lives on a persistent disk in deployment. WAL mode is set by the
-# store layer, not here.
-DATABASE_PATH = Path(os.environ.get("DATABASE_PATH") or DATA_DIR / "bazaar.db")
-
-# Postgres URL for serverless. When set, store/db.py uses psycopg2 instead of
-# sqlite3. Leave unset for local dev and tests — they stay on SQLite and need
-# no env. Example: postgresql://user:pass@host:5432/db?sslmode=require
+# Postgres is the only store — local, CI and Vercel all require DATABASE_URL.
+# Example: postgresql://user:pass@host:5432/db?sslmode=require
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
-USE_POSTGRES = DATABASE_URL.startswith("postgresql://")
+USE_POSTGRES = True  # Postgres-only; SQLite fallback removed
+DATABASE_PATH = Path(os.environ.get("DATABASE_PATH") or DATA_DIR / "bazaar.db")  # kept for scripts that reference it, not used
 
 
 # ---------------------------------------------------------------------------
