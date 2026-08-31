@@ -7,10 +7,27 @@ on:
     branches: [dev, staging, main]
 
 jobs:
-  # Hermetic SQLite suite - runs on every branch/PR, no network, no creds.
-  # This is why the Vercel Postgres crash wasn't caught: only SQLite path ran.
+  # Postgres-only suite (SQLite removed). Every run needs DATABASE_URL - now provided via service.
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: bazaar
+          POSTGRES_PASSWORD: bazaar
+          POSTGRES_DB: bazaar_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://bazaar:bazaar@localhost:5432/bazaar_test
+      POLICY_RECEIPT_HMAC_SECRET: test-hmac-secret-do-not-use-anywhere-real
+      MANDATE_SIGNING_SEED: "1111111111111111111111111111111111111111111111111111111111111111"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -23,7 +40,7 @@ jobs:
           cache-dependency-path: dashboard/package-lock.json
       - name: Install Python deps
         run: pip install -r requirements.txt
-      - name: Run hermetic tests (SQLite :memory:)
+      - name: Run tests (Postgres bazaar_test)
         run: python -m pytest -q
       - name: Build dashboard
         working-directory: dashboard
