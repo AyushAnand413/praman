@@ -515,8 +515,13 @@ def init_db(conn=None):
         pg_sql = pg_sql.replace(
             "json_extract(payload, '$.nonce')", "(payload::json ->> 'nonce')"
         )
+        # Remove SQL line comments so split-by-; doesn't leave bare "-- ..." statements
+        pg_sql = re.sub(r"--[^\n]*\n", "\n", pg_sql)
         # Execute statement-by-statement so one bad IF NOT EXISTS doesn't abort the rest
         for stmt in [s.strip() for s in pg_sql.split(";") if s.strip()]:
+            # Skip pure comment fragments
+            if stmt.lstrip().startswith("--"):
+                continue
             try:
                 conn.execute(stmt)
             except Exception as exc:
