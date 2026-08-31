@@ -7,13 +7,15 @@ on:
     branches: [dev, staging, main]
 
 jobs:
+  # Hermetic SQLite suite - runs on every branch/PR, no network, no creds.
+  # This is why the Vercel Postgres crash wasn't caught: only SQLite path ran.
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: "3.12"
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
@@ -21,28 +23,73 @@ jobs:
           cache-dependency-path: dashboard/package-lock.json
       - name: Install Python deps
         run: pip install -r requirements.txt
-      - name: Run hermetic tests
+      - name: Run hermetic tests (SQLite :memory:)
         run: python -m pytest -q
       - name: Build dashboard
         working-directory: dashboard
         run: npm ci && npm run build
 
-  deploy-dev:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
-    needs: test
+  # Postgres path - this job WOULD have caught store/db.py trigger SyntaxError
+  # and the /var/task/data read-only fallback before Vercel did.
+  # Only runs on staging/main (dev stays fast/hermetic as requested).
+  test-postgres:
+    if: github.base_ref == 'staging' || github.base_ref == 'main' || github.ref == 'refs/heads/staging' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: bazaar
+          POSTGRES_PASSWORD: bazaar
+          POSTGRES_DB: bazaar_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://bazaar:bazaar@localhost:5432/bazaar_test
+      POLICY_RECEIPT_HMAC_SECRET: test-hmac-secret-do-not-use-anywhere-real
+      MANDATE_SIGNING_SEED: "11" * 64
     steps:
       - uses: actions/checkout@v4
-      - name: Deploy to Dev (Vercel)
-        run: |
-          echo "Deploy dev: vercel --prod --env dev (requires VERCEL_TOKEN)" && echo "Add VERCEL_TOKEN + VERCEL_PROJECT_ID in GitHub Secrets, then: vercel deploy --prebuilt --prod"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Python deps
+        run: pip install -r requirements.txt
+      - name: Init DB on Postgres (catches SCHEMA_SQL translation bugs)
+        run: python -c "from store.db import init_db; init_db(); print('init_db postgres ok')"
+      - name: Run tests against Postgres
+        run: python -m pytest -q
 
-  deploy-staging:
+  # Vercel deploys separately via Vercel Git integration on push to main.
+  # These jobs just verify health after Vercel is done - they are skipped on dev
+  # as requested: "dev only test, staging/main deploy are run".
+  verify-staging:
     if: github.event_name == 'push' && github.ref == 'refs/heads/staging'
-    needs: test
+    needs: [test, test-postgres]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Deploy to Staging (Vercel)
+      - name: Verify staging health (if STAGING_URL secret set)
         run: |
-          echo "Deploy staging: vercel --prod --env staging (requires VERCEL_TOKEN)" && echo "Configure staging DATABASE_URL in Vercel env"
+          if [ -n "${{ secrets.STAGING_URL }}" ]; then
+            curl -f ${{ secrets.STAGING_URL }}/health
+          else
+            echo "No STAGING_URL secret - skipping health check (add it in GitHub Secrets to enable)"
+          fi
+
+  verify-production:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [test, test-postgres]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify production health (if PROD_URL secret set)
+        run: |
+          if [ -n "${{ secrets.PROD_URL }}" ]; then
+            curl -f ${{ secrets.PROD_URL }}/health
+          else
+            echo "No PROD_URL secret - skipping health check (add https://praman-brain.vercel.app in GitHub Secrets to enable)"
+          fi

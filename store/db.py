@@ -505,22 +505,29 @@ def init_db(conn=None):
     """
     conn = conn or get_connection()
     if _is_pg(conn):
-        # Postgres: translate minimal SQLite-isms, ignore trigger errors
+        import re
+
         pg_sql = SCHEMA_SQL.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
         pg_sql = pg_sql.replace("AUTOINCREMENT", "")
-        # Triggers are SQLite-specific — create a simple Postgres guard instead
-        # If the full schema fails, create tables without triggers
-        try:
-            conn.executescript(pg_sql)
-        except Exception:
-            # Fallback: strip trigger blocks and retry
-            import re
-            no_triggers = re.sub(r"CREATE TRIGGER.*?END;\s*", "", pg_sql, flags=re.S)
-            conn.execute(no_triggers)
+        # SQLite triggers have no Postgres equivalent - strip before execute
+        pg_sql = re.sub(r"CREATE TRIGGER.*?END;\s*", "", pg_sql, flags=re.S)
+        # SQLite json_extract -> Postgres JSON operator
+        pg_sql = pg_sql.replace(
+            "json_extract(payload, '$.nonce')", "(payload::json ->> 'nonce')"
+        )
+        # Execute statement-by-statement so one bad IF NOT EXISTS doesn't abort the rest
+        for stmt in [s.strip() for s in pg_sql.split(";") if s.strip()]:
             try:
-                conn._pg.commit()
-            except Exception:
-                pass
+                conn.execute(stmt)
+            except Exception as exc:
+                # IF NOT EXISTS already there - ignore "already exists" races
+                if "already exists" in str(exc).lower():
+                    try:
+                        conn._pg.rollback()
+                    except Exception:
+                        pass
+                    continue
+                raise
         try:
             conn._pg.commit()
         except Exception:
