@@ -1,4 +1,4 @@
-"""Schema shape: all declared tables exist, and journal_mode is WAL."""
+"""Schema shape: all declared tables exist, and journal_mode is WAL (Postgres: postgres)."""
 
 from __future__ import annotations
 
@@ -6,7 +6,16 @@ import sqlite3
 
 import pytest
 
-from store.db import TABLES, existing_tables, journal_mode
+from store.db import TABLES, _is_pg, existing_tables, journal_mode
+
+
+def _integrity_error():
+    try:
+        import psycopg2
+
+        return (sqlite3.IntegrityError, psycopg2.IntegrityError)  # type: ignore
+    except ImportError:
+        return (sqlite3.IntegrityError,)
 
 
 def test_all_declared_tables_exist(db):
@@ -17,12 +26,12 @@ def test_all_declared_tables_exist(db):
 
 
 def test_journal_mode_is_wal(db):
-    assert journal_mode(db) == "wal"
+    assert journal_mode(db) in ("wal", "postgres")
 
 
 def test_foreign_keys_are_enforced(db):
     assert db.execute("PRAGMA foreign_keys").fetchone()[0] == 1
-    with pytest.raises(sqlite3.IntegrityError):
+    with pytest.raises(_integrity_error()):
         db.execute(
             """INSERT INTO stock_holds (hold_id, sku, qty, session_id, expires_at, created_at)
                VALUES ('h1', 'NO-SUCH-SKU', 1, 's1', '2026-01-01T00:00:00Z',
@@ -36,7 +45,7 @@ def test_idempotency_key_is_unique(db):
         """INSERT INTO idempotency_keys (key, order_id, request_fingerprint, created_at)
            VALUES ('idem-1', 'ORD-1', 'fp', '2026-01-01T00:00:00Z')"""
     )
-    with pytest.raises(sqlite3.IntegrityError):
+    with pytest.raises(_integrity_error()):
         db.execute(
             """INSERT INTO idempotency_keys (key, order_id, request_fingerprint, created_at)
                VALUES ('idem-1', 'ORD-2', 'fp', '2026-01-01T00:00:00Z')"""
@@ -45,12 +54,18 @@ def test_idempotency_key_is_unique(db):
 
 def test_named_unique_index_on_idempotency_keys_exists(db):
     """The schema names this index explicitly, so assert it by name, not just behaviour."""
-    indexes = {
-        row["name"]
-        for row in db.execute(
-            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='idempotency_keys'"
-        )
-    }
+    if _is_pg(db):
+        rows = db.execute(
+            "SELECT indexname AS name FROM pg_indexes WHERE tablename='idempotency_keys'"
+        ).fetchall()
+        indexes = {row["name"] for row in rows}
+    else:
+        indexes = {
+            row["name"]
+            for row in db.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='idempotency_keys'"
+            )
+        }
     assert "idx_idempotency_keys_key" in indexes
 
 
@@ -71,7 +86,7 @@ def test_order_state_is_constrained(db):
            VALUES ('OF-1', 's1', 'AT-PRO-BLK', '[]', 5598, 0, 'sig', 'shadow',
                    '2026-01-01T00:05:00Z', '2026-01-01T00:00:00Z')"""
     )
-    with pytest.raises(sqlite3.IntegrityError):
+    with pytest.raises(_integrity_error()):
         db.execute(
             """INSERT INTO orders (order_id, session_id, offer_id, option_id, amount_inr,
                                    state, gate_tier, policy_mode, created_at, updated_at)

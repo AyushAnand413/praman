@@ -11,6 +11,11 @@ import sqlite3
 
 import pytest
 
+try:
+    import psycopg2  # type: ignore
+except ImportError:
+    psycopg2 = None  # type: ignore
+
 from settings import LEDGER_GENESIS_PREV_HASH
 from store import ledger
 from store.canonical import NonCanonicalValue, canonical_json
@@ -98,7 +103,7 @@ def test_non_money_event_needs_no_reason(db):
 
 def test_sql_check_backstops_the_python_guard(db):
     """Even a direct INSERT that skips the writer cannot log unexplained money."""
-    with pytest.raises(sqlite3.IntegrityError):
+    with pytest.raises((sqlite3.IntegrityError, psycopg2.IntegrityError) if psycopg2 else (sqlite3.IntegrityError,)):  # type: ignore
         db.execute(
             """INSERT INTO ledger (seq, ts, actor, event, payload, money_delta_inr,
                                    reason, policy_mode, prev_hash, entry_hash)
@@ -118,13 +123,13 @@ def test_unknown_actor_is_rejected(db):
 
 def test_update_on_ledger_is_refused_by_the_database(db):
     _fill(db, 2)
-    with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+    with pytest.raises(Exception, match="append-only"):
         db.execute("UPDATE ledger SET reason = 'rewritten' WHERE seq = 1")
 
 
 def test_delete_on_ledger_is_refused_by_the_database(db):
     _fill(db, 2)
-    with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+    with pytest.raises(Exception, match="append-only"):
         db.execute("DELETE FROM ledger WHERE seq = 1")
 
 

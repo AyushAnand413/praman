@@ -330,7 +330,7 @@ class _PGWrapper:
         if ":" in sql and "%(" not in sql:
             import re
 
-            sql = re.sub(r"(?<!:):(\w+)", r"%(\1)s", sql)
+            sql = re.sub(r"(?<!:):([A-Za-z_]\w*)", r"%(\1)s", sql)
         if "json_extract" in sql:
             import re
 
@@ -472,10 +472,28 @@ def init_db(conn=None):
                     pass
                 continue
             raise
+    # Enforce ledger append-only on Postgres (SQLite triggers were stripped above)
     try:
+        conn.execute(
+            "CREATE OR REPLACE FUNCTION ledger_no_update() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'ledger is append-only: UPDATE forbidden'; END; $$ LANGUAGE plpgsql"
+        )
+        conn.execute("DROP TRIGGER IF EXISTS ledger_no_update ON ledger")
+        conn.execute(
+            "CREATE TRIGGER ledger_no_update BEFORE UPDATE ON ledger FOR EACH ROW EXECUTE FUNCTION ledger_no_update()"
+        )
+        conn.execute(
+            "CREATE OR REPLACE FUNCTION ledger_no_delete() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'ledger is append-only: DELETE forbidden'; END; $$ LANGUAGE plpgsql"
+        )
+        conn.execute("DROP TRIGGER IF EXISTS ledger_no_delete ON ledger")
+        conn.execute(
+            "CREATE TRIGGER ledger_no_delete BEFORE DELETE ON ledger FOR EACH ROW EXECUTE FUNCTION ledger_no_delete()"
+        )
         conn._pg.commit()
     except Exception:
-        pass
+        try:
+            conn._pg.rollback()
+        except Exception:
+            pass
     try:
         migrate(conn)
     except Exception:
