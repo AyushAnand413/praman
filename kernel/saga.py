@@ -567,8 +567,8 @@ def restock_for_offer(offer_id: str) -> list[str]:
     with transaction(conn):
         for sku, qty in sorted(needed.items()):
             conn.execute(
-                """UPDATE products SET stock_qty = MAX(stock_qty, ?) WHERE sku = ?""",
-                (qty, sku),
+                """UPDATE products SET stock_qty = CASE WHEN stock_qty > ? THEN stock_qty ELSE ? END WHERE sku = ?""",
+                (qty, qty, sku),
             )
             touched.append(sku)
     for sku in touched:
