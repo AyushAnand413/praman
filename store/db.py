@@ -342,10 +342,14 @@ class _PGWrapper:
 
     def execute(self, sql, params=()):
         cur = self._pg.cursor()
-        # Translate SQLite's `?` placeholders to Postgres `%s` for simple cases
-        # Most code uses `?` — replace but keep `??` etc minimal
+        # Translate SQLite placeholders to Postgres: `?` -> `%s`, `:name` -> `%(name)s`
+        # Avoid `::` casts (payload::json) by negative lookbehind
         if "?" in sql and "%s" not in sql:
             sql = sql.replace("?", "%s")
+        if ":" in sql and "%(" not in sql:
+            import re
+
+            sql = re.sub(r"(?<!:):(\w+)", r"%(\1)s", sql)
         cur.execute(sql, params)
         # For SELECT, return cursor as iterable; for DDL, return cur
         return cur
