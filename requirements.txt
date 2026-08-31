@@ -20,7 +20,12 @@ google-genai>=1.0
 # The MCP server, so an agent that speaks Model Context Protocol can transact
 # without an HTTP integration written for this store specifically. A thin wrapper
 # over the same endpoints, sharing their validation rather than repeating it.
-mcp>=1.9
+mcp>=1.9,<2.0
+
+# Serverless + Postgres — only used when DATABASE_URL starts with postgresql://
+# SQLite remains the default so `pytest` without env still passes.
+mangum>=0.17
+psycopg2-binary>=2.9
 
 # Deliberately absent:
 #   razorpay      — kernel/payments.py talks to the REST API over httpx, which

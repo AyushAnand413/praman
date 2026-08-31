@@ -168,7 +168,7 @@ def create_app() -> FastAPI:
     from fastapi.staticfiles import StaticFiles
     from pathlib import Path
 
-    panel_dir = Path(__file__).resolve().parent / "static" / "panel"
+    panel_dir = Path(__file__).resolve().parent.parent / "public" / "panel"
     if panel_dir.exists():
         app.mount("/panel", StaticFiles(directory=panel_dir, html=True), name="panel")
 
