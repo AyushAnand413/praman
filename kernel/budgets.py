@@ -80,7 +80,7 @@ def _accrue_within(
         """INSERT INTO policy_budgets (day, discount_spent_inr, updated_at)
                 VALUES (?, ?, ?)
            ON CONFLICT (day) DO UPDATE
-                SET discount_spent_inr = discount_spent_inr + excluded.discount_spent_inr,
+                SET discount_spent_inr = policy_budgets.discount_spent_inr + excluded.discount_spent_inr,
                     updated_at = excluded.updated_at""",
         (day, int(discount_inr), now_ts()),
     )
@@ -165,10 +165,10 @@ def release(
     with transaction(conn):
         conn.execute(
             """UPDATE policy_budgets
-                  SET discount_spent_inr = MAX(0, discount_spent_inr - ?),
+                  SET discount_spent_inr = CASE WHEN discount_spent_inr - ? < 0 THEN 0 ELSE discount_spent_inr - ? END,
                       updated_at = ?
                 WHERE day = ?""",
-            (discount_inr, now_ts(), key),
+            (discount_inr, discount_inr, now_ts(), key),
         )
         row = conn.execute(
             "SELECT discount_spent_inr FROM policy_budgets WHERE day = ?", (key,)

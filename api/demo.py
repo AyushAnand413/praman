@@ -109,8 +109,8 @@ def _pre_restock_default() -> None:
     with transaction(conn):
         for line in scenario.lines:
             conn.execute(
-                "UPDATE products SET stock_qty = MAX(stock_qty, ?) WHERE sku = ?",
-                (line.qty, line.sku),
+                "UPDATE products SET stock_qty = CASE WHEN stock_qty > ? THEN stock_qty ELSE ? END WHERE sku = ?",
+                (line.qty, line.qty, line.sku),
             )
     for line in scenario.lines:
         catalog.cache.set_offerable(line.sku, True)
