@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { use, useEffect, useState } from "react";
 import "../../globals.css";
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 function money(n){ return n==null? "—": `\u20B9${Number(n).toLocaleString("en-IN")}`; }
@@ -27,7 +27,9 @@ function humanStep(e){
   return { title: ev?.replace(/\./g," · ") || "Event", desc: r.slice(0,90), tone:""};
 }
 export default function AuditPage({ params }){
-  const id = params?.id || "";
+  // Next 16: params is a Promise in client components — must unwrap with React.use()
+  const resolved = params && typeof params.then === "function" ? use(params) : params;
+  const id = resolved?.id || "";
   const [data,setData]=useState(null);
   const [err,setErr]=useState("");
   useEffect(()=>{
