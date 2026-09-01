@@ -3,6 +3,11 @@ from __future__ import annotations
 import json
 import sqlite3
 import dataclasses
+
+try:
+    import psycopg2  # type: ignore
+except ImportError:
+    psycopg2 = None  # type: ignore
 from typing import Optional
 
 from policy.mec import (
@@ -60,8 +65,12 @@ def save_mec_version(mec: MEC, *, conn: sqlite3.Connection | None = None) -> Non
                 mec.created_at,
             ),
         )
-    except sqlite3.IntegrityError as e:
+    except (sqlite3.IntegrityError, psycopg2.IntegrityError) as e:  # type: ignore
         raise ValueError(f"MEC version already exists: {e}")
+    except Exception as e:
+        if psycopg2 and isinstance(e, psycopg2.IntegrityError):  # type: ignore
+            raise ValueError(f"MEC version already exists: {e}") from e
+        raise
 
 def _row_to_mec(row: sqlite3.Row) -> MEC:
     data = json.loads(row["body"])
