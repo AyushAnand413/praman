@@ -33,6 +33,7 @@ import anyio.to_thread
 from fastapi import HTTPException
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.transport_security import TransportSecuritySettings
 
 from api import agent as agent_api
 
@@ -107,10 +108,14 @@ def build_server() -> FastMCP:
     mcp = FastMCP(
         name=SERVER_NAME,
         instructions=INSTRUCTIONS,
+        host="0.0.0.0",
         stateless_http=True,
         json_response=False,
         streamable_http_path="/",
         sse_path="/sse",
+        transport_security=TransportSecuritySettings(
+            enable_dns_rebinding_protection=False
+        ),
     )
 
     @mcp.tool(
