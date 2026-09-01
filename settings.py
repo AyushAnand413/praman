@@ -44,14 +44,11 @@ except Exception:
 # ---------------------------------------------------------------------------
 
 BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = Path(os.environ.get("DATA_DIR") or BASE_DIR / "data")
 CATALOG_PATH = Path(os.environ.get("CATALOG_PATH") or BASE_DIR / "catalog.json")
 
-# Postgres is the only store — local, CI and Vercel all require DATABASE_URL.
+# Postgres-only — local, CI and Vercel all require DATABASE_URL.
 # Example: postgresql://user:pass@host:5432/db?sslmode=require
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
-USE_POSTGRES = True  # Postgres-only; SQLite fallback removed
-DATABASE_PATH = Path(os.environ.get("DATABASE_PATH") or DATA_DIR / "bazaar.db")  # kept for scripts that reference it, not used
 
 
 # ---------------------------------------------------------------------------
