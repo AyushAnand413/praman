@@ -386,7 +386,17 @@ def connect(path: Path | str | None = None):  # path ignored - Postgres only
         import psycopg2
         import psycopg2.extras
 
-        raw = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+        # keepalives detect a Neon sleep/kill quickly instead of hanging 5m
+        # channel_binding is not supported by libpq on Vercel - caller should strip it from URL
+        raw = psycopg2.connect(
+            DATABASE_URL,
+            cursor_factory=psycopg2.extras.RealDictCursor,
+            keepalives=1,
+            keepalives_idle=30,
+            keepalives_interval=10,
+            keepalives_count=3,
+            connect_timeout=10,
+        )
         raw.autocommit = False
         return _PGWrapper(raw)
     except Exception as exc:
@@ -394,10 +404,22 @@ def connect(path: Path | str | None = None):  # path ignored - Postgres only
 
 
 def get_connection():
-    """Thread-local connection to Postgres."""
+    """Thread-local connection to Postgres, auto-reconnects if Neon slept."""
     conn = getattr(_local, "conn", None)
-    if conn is None:
-        conn = _local.conn = connect()
+    if conn is not None:
+        try:
+            # lightweight liveness probe; dead Neon connections fail here
+            cur = conn._pg.cursor()
+            cur.execute("SELECT 1")
+            cur.close()
+            return conn
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            _local.conn = None
+    conn = _local.conn = connect()
     return conn
 
 
