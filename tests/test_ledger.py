@@ -111,6 +111,10 @@ def test_sql_check_backstops_the_python_guard(db):
                        '{}', 5598, '', 'live', ?, 'deadbeef')""",
             (LEDGER_GENESIS_PREV_HASH,),
         )
+    try:
+        db._pg.rollback()  # type: ignore[attr-defined]
+    except Exception:
+        pass
 
 
 def test_unknown_actor_is_rejected(db):
@@ -180,9 +184,15 @@ def test_blanking_a_reason_is_refused_even_with_the_triggers_gone(db):
                   reason="captured for ORD-1", conn=db)
 
     db.executescript(DROP_GUARDS)
-    with pytest.raises(sqlite3.IntegrityError, match="money_delta_inr"):
+    with pytest.raises((sqlite3.IntegrityError, psycopg2.IntegrityError) if psycopg2 else (sqlite3.IntegrityError,), match="money_delta_inr"):  # type: ignore
         db.execute("UPDATE ledger SET reason = '' WHERE seq = 2")
 
+    # The failed UPDATE leaves the Postgres transaction aborted; clear it
+    # so the read that follows does not see "current transaction is aborted"
+    try:
+        db._pg.rollback()  # type: ignore[attr-defined]
+    except Exception:
+        pass
     assert ledger.verify_chain(db)["intact"] is True
 
 
