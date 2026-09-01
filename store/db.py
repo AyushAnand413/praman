@@ -346,7 +346,20 @@ class _PGWrapper:
         cur = self._pg.cursor()
         sql = sql.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
         sql = sql.replace("AUTOINCREMENT", "")
-        cur.execute(sql)
+        # Translate SQLite DROP TRIGGER to Postgres (requires ON table)
+        sql = sql.replace(
+            "DROP TRIGGER IF EXISTS ledger_no_update",
+            "DROP TRIGGER IF EXISTS ledger_no_update ON ledger",
+        )
+        sql = sql.replace(
+            "DROP TRIGGER IF EXISTS ledger_no_delete",
+            "DROP TRIGGER IF EXISTS ledger_no_delete ON ledger",
+        )
+        # psycopg2 with RealDictCursor does not allow multiple ;-separated statements in one execute
+        for stmt in [s.strip() for s in sql.split(";") if s.strip()]:
+            if stmt.lstrip().startswith("--"):
+                continue
+            cur.execute(stmt)
         self._pg.commit()
         return cur
 
