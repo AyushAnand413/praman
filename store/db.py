@@ -414,9 +414,11 @@ def reset_connection() -> None:
 
 @contextmanager
 def transaction(conn=None) -> Iterator:
-    """BEGIN ... COMMIT, rolling back on any exception. Postgres-only."""
+    """Postgres transaction - no explicit BEGIN (psycopg2 manages it)."""
     conn = conn or get_connection()
-    conn.execute("BEGIN")
+    # Psycopg2 starts a transaction implicitly on first execute; explicit BEGIN
+    # while already in a transaction warns "there is already a transaction in progress"
+    # and can hang, so just yield and commit/rollback.
     try:
         yield conn
     except BaseException:
@@ -428,7 +430,10 @@ def transaction(conn=None) -> Iterator:
     try:
         conn._pg.commit()
     except Exception:
-        conn.execute("COMMIT")
+        try:
+            conn._pg.rollback()
+        except Exception:
+            pass
     return
 
 
@@ -477,6 +482,10 @@ def init_db(conn=None):
             continue
         try:
             conn.execute(stmt)
+            try:
+                conn._pg.commit()
+            except Exception:
+                pass
         except Exception as exc:
             if "already exists" in str(exc).lower():
                 try:
@@ -484,6 +493,10 @@ def init_db(conn=None):
                 except Exception:
                     pass
                 continue
+            try:
+                conn._pg.rollback()
+            except Exception:
+                pass
             raise
     # Enforce ledger append-only on Postgres (SQLite triggers were stripped above)
     try:
