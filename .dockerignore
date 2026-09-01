@@ -1,0 +1,7 @@
+.git
+__pycache__
+.venv
+dashboard/node_modules
+dashboard/.next
+data
+.env
