@@ -800,6 +800,7 @@ def _proceed_to_payment(
                 link = client.create_payment_link(
                     amount_inr,
                     reference_id=order_id,
+                    order_id=gateway_order["id"],
                     description=f"Aether Audio order {order_id} — ₹{amount_inr}",
                     notes={"order_id": order_id, "offer_id": offer["offer_id"]},
                 )
