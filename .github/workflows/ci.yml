@@ -10,6 +10,7 @@ jobs:
   # Postgres-only suite (SQLite removed). Every run needs DATABASE_URL - now provided via service.
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:16
@@ -27,7 +28,9 @@ jobs:
     env:
       DATABASE_URL: postgresql://bazaar:bazaar@localhost:5432/bazaar_test
       POLICY_RECEIPT_HMAC_SECRET: test-hmac-secret-do-not-use-anywhere-real
+      RAZORPAY_WEBHOOK_SECRET: test-webhook-secret-0123456789
       MANDATE_SIGNING_SEED: "1111111111111111111111111111111111111111111111111111111111111111"
+      DEMO_KEY: test-demo-key-0123456789
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -40,18 +43,20 @@ jobs:
           cache-dependency-path: dashboard/package-lock.json
       - name: Install Python deps
         run: pip install -r requirements.txt
+      - name: Verify DB connection and schema translation
+        run: python -c "from store.db import init_db; init_db(); print('init_db postgres ok')"
       - name: Run tests (Postgres bazaar_test)
-        run: python -m pytest -q
+        run: python -m pytest -q --tb=short
       - name: Build dashboard
         working-directory: dashboard
         run: npm ci && npm run build
 
-  # Postgres path - this job WOULD have caught store/db.py trigger SyntaxError
-  # and the /var/task/data read-only fallback before Vercel did.
-  # Only runs on staging/main (dev stays fast/hermetic as requested).
+  # Quick Postgres smoke - only on staging/main pushes (dev stays fast).
+  # Catches SCHEMA_SQL translation bugs before Vercel deploy.
   test-postgres:
     if: github.base_ref == 'staging' || github.base_ref == 'main' || github.ref == 'refs/heads/staging' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:16
@@ -69,7 +74,9 @@ jobs:
     env:
       DATABASE_URL: postgresql://bazaar:bazaar@localhost:5432/bazaar_test
       POLICY_RECEIPT_HMAC_SECRET: test-hmac-secret-do-not-use-anywhere-real
+      RAZORPAY_WEBHOOK_SECRET: test-webhook-secret-0123456789
       MANDATE_SIGNING_SEED: "1111111111111111111111111111111111111111111111111111111111111111"
+      DEMO_KEY: test-demo-key-0123456789
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -80,7 +87,7 @@ jobs:
       - name: Init DB on Postgres (catches SCHEMA_SQL translation bugs)
         run: python -c "from store.db import init_db; init_db(); print('init_db postgres ok')"
       - name: Run tests against Postgres
-        run: python -m pytest -q
+        run: python -m pytest -q --tb=short
 
   # Vercel deploys separately via Vercel Git integration on push to main.
   # These jobs just verify health after Vercel is done - they are skipped on dev

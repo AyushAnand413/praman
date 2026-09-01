@@ -416,9 +416,6 @@ def reset_connection() -> None:
 def transaction(conn=None) -> Iterator:
     """Postgres transaction - no explicit BEGIN (psycopg2 manages it)."""
     conn = conn or get_connection()
-    # Psycopg2 starts a transaction implicitly on first execute; explicit BEGIN
-    # while already in a transaction warns "there is already a transaction in progress"
-    # and can hang, so just yield and commit/rollback.
     try:
         yield conn
     except BaseException:
@@ -434,6 +431,7 @@ def transaction(conn=None) -> Iterator:
             conn._pg.rollback()
         except Exception:
             pass
+        raise
     return
 
 
