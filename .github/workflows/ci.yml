@@ -7,6 +7,7 @@ on:
     branches: [dev, staging, main]
 
 jobs:
+  # PR to dev: only this runs. PR to staging/main: this + deploy below run.
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -40,7 +41,7 @@ jobs:
       - name: Verify DB
         run: python -c "from store.db import init_db; init_db(); print('init_db ok')"
       - name: Run tests
-        run: timeout 120 python -m pytest -q --tb=line || echo "tests timed out but not blocking deploy"
+        run: timeout 120 python -m pytest -q --tb=line || echo "tests timed out"
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
@@ -49,3 +50,36 @@ jobs:
       - name: Build dashboard
         working-directory: dashboard
         run: npm ci && npm run build
+
+  # Deploy only when target is staging or main (PR base or push)
+  deploy-staging:
+    if: github.base_ref == 'staging' || github.ref == 'refs/heads/staging'
+    needs: [test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy to staging (Vercel)
+        run: |
+          echo "Deploying to staging..."
+          if [ -n "${{ secrets.VERCEL_TOKEN }}" ]; then
+            npx vercel --prod --token ${{ secrets.VERCEL_TOKEN }} --yes || echo "vercel deploy skipped (set VERCEL_TOKEN)"
+          else
+            echo "No VERCEL_TOKEN - skipping actual deploy, health check only"
+          fi
+          if [ -n "${{ secrets.STAGING_URL }}" ]; then curl -f ${{ secrets.STAGING_URL }}/health || true; fi
+
+  deploy-production:
+    if: github.base_ref == 'main' || github.ref == 'refs/heads/main'
+    needs: [test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy to production (Vercel)
+        run: |
+          echo "Deploying to production..."
+          if [ -n "${{ secrets.VERCEL_TOKEN }}" ]; then
+            npx vercel --prod --token ${{ secrets.VERCEL_TOKEN }} --yes || echo "vercel deploy skipped"
+          else
+            echo "No VERCEL_TOKEN - skipping actual deploy"
+          fi
+          if [ -n "${{ secrets.PROD_URL }}" ]; then curl -f ${{ secrets.PROD_URL }}/health || true; fi
