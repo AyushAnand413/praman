@@ -37,6 +37,10 @@ def test_foreign_keys_are_enforced(db):
                VALUES ('h1', 'NO-SUCH-SKU', 1, 's1', '2026-01-01T00:00:00Z',
                        '2026-01-01T00:00:00Z')"""
         )
+    try:
+        db._pg.rollback()  # type: ignore[attr-defined]
+    except Exception:
+        pass
 
 
 def test_idempotency_key_is_unique(db):
@@ -50,6 +54,10 @@ def test_idempotency_key_is_unique(db):
             """INSERT INTO idempotency_keys (key, order_id, request_fingerprint, created_at)
                VALUES ('idem-1', 'ORD-2', 'fp', '2026-01-01T00:00:00Z')"""
         )
+    try:
+        db._pg.rollback()  # type: ignore[attr-defined]
+    except Exception:
+        pass
 
 
 def test_named_unique_index_on_idempotency_keys_exists(db):
@@ -93,3 +101,7 @@ def test_order_state_is_constrained(db):
                VALUES ('ORD-1', 's1', 'OF-1', 'opt-1', 5598, 'PROBABLY_FINE', 0,
                        'shadow', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')"""
         )
+    try:
+        db._pg.rollback()  # type: ignore[attr-defined]
+    except Exception:
+        pass

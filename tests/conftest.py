@@ -1,11 +1,12 @@
 """Shared pytest fixtures.
 
-Every test runs against Postgres (Neon) with TRUNCATE isolation — ledger is
+Every test runs against Postgres with TRUNCATE isolation — ledger is
 append-only so a test never pollutes the next.
 """
 
 from __future__ import annotations
 
+import os
 import sys
 from collections.abc import Iterator
 from dataclasses import replace
@@ -16,6 +17,35 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+# Ensure DATABASE_URL is loaded from .env before settings is imported.
+# In CI the env var is already set via the workflow `env:` block; locally
+# developers rely on .env. Settings reads os.environ at import time, so this
+# must run before `store.db` is imported.
+try:
+    from dotenv import load_dotenv  # type: ignore
+
+    load_dotenv(REPO_ROOT / ".env", override=False)
+except Exception:
+    try:
+        from scripts._env import load_env_file  # type: ignore
+
+        load_env_file()
+    except Exception:
+        pass
+
+# Also ensure postgres-related env is present for settings import.
+if not os.environ.get("DATABASE_URL"):
+    try:
+        from scripts._env import parse_env_file  # type: ignore
+
+        _env_vals = parse_env_file(REPO_ROOT / ".env")
+        for _k, _v in _env_vals.items():
+            if _k == "DATABASE_URL" and _v:
+                os.environ.setdefault(_k, _v)
+                break
+    except Exception:
+        pass
 
 from store import catalog as catalog_module  # noqa: E402
 from store import db as db_module  # noqa: E402
@@ -162,7 +192,9 @@ def db(monkeypatch: pytest.MonkeyPatch) -> Iterator:
     db_module.reset_connection()
     conn = db_module.get_connection()
     db_module.init_db(conn)
-    # Truncate all tables to get isolation (Postgres shared DB)
+    # TRUNCATE for isolation — transaction() already commits, so no extra COMMIT.
+    # Extra COMMIT (conn.execute("COMMIT") mixed SQL with psycopg2 state) was
+    # the hang on Postgres and is removed.
     with db_module.transaction(conn):
         for table in reversed(TABLES):
             try:
@@ -172,10 +204,6 @@ def db(monkeypatch: pytest.MonkeyPatch) -> Iterator:
                     conn.execute(f"DELETE FROM {table}")
                 except Exception:
                     pass
-    try:
-        conn.execute("COMMIT")
-    except Exception:
-        pass
     catalog_module.seed_database(conn=conn)
     catalog_module.cache.load(conn)
     try:
@@ -354,7 +382,7 @@ def forbidden_razorpay() -> ForbiddenRazorpay:
 
 
 @pytest.fixture
-def make_offer(db: sqlite3.Connection):
+def make_offer(db):  # type: ignore[no-untyped-def]
     """Store a bounded, gated, signed offer and return it.
 
     Delegates to the seeding module the demo uses, so a test and a live demo
@@ -395,7 +423,7 @@ def live_mode(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-def trusted_issuer(db: sqlite3.Connection) -> str:
+def trusted_issuer(db) -> str:  # type: ignore[no-untyped-def]
     """Register the demo issuer in the process registry, as startup does.
 
     Without this every mandate verifies as UNKNOWN_ISSUER, which escalates rather
