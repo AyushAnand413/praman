@@ -268,6 +268,7 @@ class RazorpayClient:
         description: str = "Aether Audio order",
         notes: dict[str, str] | None = None,
         currency: str = "INR",
+        order_id: str | None = None,
     ) -> dict[str, Any]:
         """Create a hosted payment link for an order (for chat UX)."""
         payload: dict[str, Any] = {
@@ -277,6 +278,8 @@ class RazorpayClient:
             "description": description,
             "notes": notes or {},
         }
+        if order_id:
+            payload["order_id"] = order_id
         body = self._request("POST", "/payment_links", json=payload)
         # normalize differently - payment_links return short_url
         return {

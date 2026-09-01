@@ -59,6 +59,7 @@ export default function Page(){
   const [policy,setPolicy]=useState(null);
   const [policyDraft,setPolicyDraft]=useState(null);
   const [authReady,setAuthReady]=useState(false);
+  const [restoreTimeout,setRestoreTimeout]=useState(false);
   // How many feed entries to ask for. Grows on "Show older" rather than the
   // client stitching pages together, so the 6s poll keeps returning one
   // coherent window instead of racing an accumulated list.
@@ -90,11 +91,13 @@ export default function Page(){
       setData(j);
       try{ sessionStorage.setItem("praman-token",tok); sessionStorage.setItem("store-id",sid);}catch{}
       try{
-        const o = await fetch(`${API}/merchant/v1/orders?limit=12`, opts);
+        const [o, s, p] = await Promise.all([
+          fetch(`${API}/merchant/v1/orders?limit=12`, opts),
+          fetch(`${API}/merchant/v1/stores`, opts),
+          fetch(`${API}/merchant/v1/policy`, opts),
+        ]);
         if(o.ok){ const oj=await o.json(); if(!stale()) setOrders(oj); }
-        const s = await fetch(`${API}/merchant/v1/stores`, opts);
         if(s.ok){ const sj=await s.json(); if(!stale() && sj.stores?.length) setStores(sj.stores); }
-        const p = await fetch(`${API}/merchant/v1/policy`, opts);
         if(p.ok){ const pj=await p.json(); if(!stale()){ setPolicy(pj.policy); setPolicyDraft(pj.policy); } }
       }catch{}
     }catch(e){
@@ -104,6 +107,12 @@ export default function Page(){
   },[token,storeId]);
   useEffect(()=>{ try{ const tk=sessionStorage.getItem("praman-token"); const ss=sessionStorage.getItem("store-id"); if(tk) setToken(tk); if(ss) setStoreId(ss);}catch{} finally{ setAuthReady(true); } },[]);
   useEffect(()=>{ if(!token) return; load(); const id=setInterval(()=>{ if(!document.hidden) load(); },6000); const onVisible=()=>{ if(!document.hidden) load(); }; document.addEventListener("visibilitychange", onVisible); return()=>{ clearInterval(id); document.removeEventListener("visibilitychange",onVisible); inflight.current?.abort(); }; },[token,storeId,load]);
+  useEffect(()=>{
+    if(token && !data){
+      const t=setTimeout(()=>setRestoreTimeout(true), 8000);
+      return ()=>clearTimeout(t);
+    } else setRestoreTimeout(false);
+  },[token,data]);
   async function handleAuth(){
     setError(""); setBusy(true);
     try{
@@ -159,7 +168,11 @@ export default function Page(){
   // If token exists but data not yet fetched, show restoring, not sign-in — fixes flash on back nav
   if(!data){
     if(token){
-      return <main className="wrap"><div style={{maxWidth:460, margin:"80px auto", textAlign:"center", color:"var(--muted)"}}>Restoring session…</div></main>;
+      return <main className="wrap"><div style={{maxWidth:460, margin:"80px auto", textAlign:"center", color:"var(--muted)"}}>
+        <div>Restoring session…</div>
+        {restoreTimeout ? <div style={{marginTop:14, fontSize:12, color:"var(--coral)"}}>Taking too long — Neon may be waking (5 sec). <button className="pill dark" style={{marginLeft:8}} onClick={()=>{ setRestoreTimeout(false); load(); }}>Retry</button> <button className="pill dark" style={{marginLeft:6}} onClick={()=>{ try{sessionStorage.clear()}catch{}; setToken(""); setData(null); }}>Sign in again</button></div> : <div style={{marginTop:8, fontSize:11, color:"var(--muted)", opacity:0.7}}>First load after idle takes 3-5 sec</div>}
+        {error ? <div className="error" style={{marginTop:12}}>{error}</div> : null}
+      </div></main>;
     }
     return (
       <main className="wrap">
