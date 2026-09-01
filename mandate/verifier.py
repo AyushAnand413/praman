@@ -45,6 +45,11 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass, replace
+
+try:
+    import psycopg2  # type: ignore
+except ImportError:
+    psycopg2 = None  # type: ignore
 from datetime import datetime
 from typing import Any, Iterable
 
@@ -413,10 +418,15 @@ def verify(
             ),
             conn=conn,
         )
-    except sqlite3.IntegrityError:
+    except (sqlite3.IntegrityError, psycopg2.IntegrityError) as e:  # type: ignore
         # The UNIQUE index on accepted nonces fired: another request accepted
         # this same nonce between the check above and this write. The database
         # is the authority on replay, so this is a replay.
+        if psycopg2 and isinstance(e, psycopg2.IntegrityError):  # type: ignore
+            try:
+                conn._pg.rollback()  # type: ignore
+            except Exception:
+                pass
         return _reject(
             NONCE_REPLAYED,
             f"nonce {claims['nonce']} was accepted concurrently by another "

@@ -34,6 +34,11 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
+
+try:
+    import psycopg2  # type: ignore
+except ImportError:
+    psycopg2 = None  # type: ignore
 from hashlib import sha256
 from typing import Any
 
@@ -137,13 +142,29 @@ def claim(
                    VALUES (?, NULL, ?, NULL, ?)""",
                 (key, request_fingerprint, stamp),
             )
-    except sqlite3.IntegrityError:
+    except (sqlite3.IntegrityError, psycopg2.IntegrityError) as exc:  # type: ignore
         # Someone else got there first. The unique index is what makes this a
         # reliable answer rather than a guess.
+        if psycopg2 and isinstance(exc, psycopg2.IntegrityError):  # type: ignore
+            try:
+                conn._pg.rollback()  # type: ignore
+            except Exception:
+                pass
         row = _require_row(key, conn=conn)
         if row["request_fingerprint"] != request_fingerprint:
             raise FingerprintMismatch(key) from None
         return _row_to_claim(row, is_new=False)
+    except Exception as e:
+        if psycopg2 and isinstance(e, psycopg2.IntegrityError):  # type: ignore
+            try:
+                conn._pg.rollback()  # type: ignore
+            except Exception:
+                pass
+            row = _require_row(key, conn=conn)
+            if row["request_fingerprint"] != request_fingerprint:
+                raise FingerprintMismatch(key) from None
+            return _row_to_claim(row, is_new=False)
+        raise
 
     return Claim(key=key, is_new=True, created_at=stamp)
 
