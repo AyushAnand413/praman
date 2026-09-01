@@ -182,6 +182,11 @@ def create_app() -> FastAPI:
     # sit in front of every route above it.
     app.state.mcp_server = mcp_module.build_server()
     app.mount("/mcp", app.state.mcp_server.streamable_http_app(), name="mcp")
+    # SSE fallback for clients like mcp-remote that fail on Vercel's chunked streamable HTTP
+    try:
+        app.mount("/mcp-sse", app.state.mcp_server.sse_app(), name="mcp-sse")
+    except Exception:
+        pass
 
     @app.get("/health", tags=["ops"], summary="Liveness + mode")
     def health() -> dict[str, Any]:

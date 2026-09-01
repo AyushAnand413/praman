@@ -108,8 +108,9 @@ def build_server() -> FastMCP:
         name=SERVER_NAME,
         instructions=INSTRUCTIONS,
         stateless_http=True,
-        json_response=True,
+        json_response=False,
         streamable_http_path="/",
+        sse_path="/sse",
     )
 
     @mcp.tool(
