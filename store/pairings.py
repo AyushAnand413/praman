@@ -403,7 +403,7 @@ INSERT_TOGETHER = (
     "(cluster, base_category, paired_category, base_count, together_count, updated_at) "
     "VALUES (?, ?, ?, ?, 1, ?) "
     "ON CONFLICT (cluster, base_category, paired_category) DO UPDATE SET "
-    "together_count = together_count + 1, updated_at = excluded.updated_at"
+    "together_count = cluster_pairings.together_count + 1, updated_at = excluded.updated_at"
 )
 
 

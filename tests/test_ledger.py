@@ -11,6 +11,11 @@ import sqlite3
 
 import pytest
 
+try:
+    import psycopg2  # type: ignore
+except ImportError:
+    psycopg2 = None  # type: ignore
+
 from settings import LEDGER_GENESIS_PREV_HASH
 from store import ledger
 from store.canonical import NonCanonicalValue, canonical_json
@@ -98,7 +103,7 @@ def test_non_money_event_needs_no_reason(db):
 
 def test_sql_check_backstops_the_python_guard(db):
     """Even a direct INSERT that skips the writer cannot log unexplained money."""
-    with pytest.raises(sqlite3.IntegrityError):
+    with pytest.raises((sqlite3.IntegrityError, psycopg2.IntegrityError) if psycopg2 else (sqlite3.IntegrityError,)):  # type: ignore
         db.execute(
             """INSERT INTO ledger (seq, ts, actor, event, payload, money_delta_inr,
                                    reason, policy_mode, prev_hash, entry_hash)
@@ -106,6 +111,10 @@ def test_sql_check_backstops_the_python_guard(db):
                        '{}', 5598, '', 'live', ?, 'deadbeef')""",
             (LEDGER_GENESIS_PREV_HASH,),
         )
+    try:
+        db._pg.rollback()  # type: ignore[attr-defined]
+    except Exception:
+        pass
 
 
 def test_unknown_actor_is_rejected(db):
@@ -118,13 +127,13 @@ def test_unknown_actor_is_rejected(db):
 
 def test_update_on_ledger_is_refused_by_the_database(db):
     _fill(db, 2)
-    with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+    with pytest.raises(Exception, match="append-only"):
         db.execute("UPDATE ledger SET reason = 'rewritten' WHERE seq = 1")
 
 
 def test_delete_on_ledger_is_refused_by_the_database(db):
     _fill(db, 2)
-    with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+    with pytest.raises(Exception, match="append-only"):
         db.execute("DELETE FROM ledger WHERE seq = 1")
 
 
@@ -175,9 +184,15 @@ def test_blanking_a_reason_is_refused_even_with_the_triggers_gone(db):
                   reason="captured for ORD-1", conn=db)
 
     db.executescript(DROP_GUARDS)
-    with pytest.raises(sqlite3.IntegrityError, match="money_delta_inr"):
+    with pytest.raises((sqlite3.IntegrityError, psycopg2.IntegrityError) if psycopg2 else (sqlite3.IntegrityError,), match="money_delta_inr"):  # type: ignore
         db.execute("UPDATE ledger SET reason = '' WHERE seq = 2")
 
+    # The failed UPDATE leaves the Postgres transaction aborted; clear it
+    # so the read that follows does not see "current transaction is aborted"
+    try:
+        db._pg.rollback()  # type: ignore[attr-defined]
+    except Exception:
+        pass
     assert ledger.verify_chain(db)["intact"] is True
 
 
