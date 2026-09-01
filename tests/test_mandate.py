@@ -281,10 +281,15 @@ def test_the_database_is_the_authority_on_replay(db, mandate_for):
     """
     import sqlite3
 
+    try:
+        import psycopg2  # type: ignore
+    except ImportError:
+        psycopg2 = None  # type: ignore
+
     verdict = _verify(mandate_for())
     assert verdict.valid
 
-    with pytest.raises(sqlite3.IntegrityError):
+    with pytest.raises((sqlite3.IntegrityError, psycopg2.IntegrityError) if psycopg2 else (sqlite3.IntegrityError,)):  # type: ignore
         ledger.append(
             "policy_kernel",
             "mandate.accepted",
