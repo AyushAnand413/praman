@@ -181,23 +181,28 @@ def build_server() -> FastMCP:
         name="buy",
         title="Buy an offered option",
         description=(
-            "Accept one option from an offer. You supply the offer id, the option "
-            "id, and an idempotency_key you generate — retrying with the same key "
-            "cannot charge twice, and a key is required. Above the mandate "
-            "threshold a signed mandate token is required; above the human "
-            "threshold the order is held for merchant approval and you poll it "
-            "with check_order. You do not send an amount: the price comes from "
-            "the stored offer."
+            "Accept one option from an offer. You supply the offer id and the option "
+            "id. An idempotency_key is auto-generated if you omit it — retrying with "
+            "the same key cannot charge twice. Above the mandate threshold a signed "
+            "mandate token is required; above the human threshold the order is held "
+            "for merchant approval and you poll it with check_order. You do not send "
+            "an amount: the price comes from the stored offer."
         ),
     )
     async def buy(
         offer_id: str,
         option_id: str,
         agent_id: str,
-        idempotency_key: str,
+        idempotency_key: str | None = None,
         mandate: str | None = None,
         payment_id: str | None = None,
     ) -> dict[str, Any]:
+        if not idempotency_key:
+            import secrets
+
+            # auto idempotency: keeps checkout frictionless for natural language buys,
+            # kernel still gets a real key so exactly-once guarantee holds
+            idempotency_key = f"auto_{secrets.token_urlsafe(12)}"
         body = agent_api.CheckoutRequest(
             offer_id=offer_id,
             option_id=option_id,
