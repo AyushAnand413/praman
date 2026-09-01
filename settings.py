@@ -24,6 +24,21 @@ from decimal import Decimal
 from enum import Enum
 from pathlib import Path
 
+# Local dev: auto-load .env if present so `python -m uvicorn api.app:app` works
+# without `python -m dotenv run --`. Production (Vercel/CI) already has env set,
+# so this is a no-op there (override=False). Path is explicit so the reloader
+# child process finds it regardless of cwd.
+try:
+    from dotenv import load_dotenv  # type: ignore
+
+    _env_path = Path(__file__).resolve().parent / ".env"
+    load_dotenv(dotenv_path=_env_path, override=False)
+    # fallback to default search if not found at repo root
+    if not os.environ.get("DATABASE_URL"):
+        load_dotenv(override=False)
+except Exception:
+    pass
+
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
