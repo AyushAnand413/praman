@@ -27,8 +27,12 @@ router = APIRouter(prefix="/audit", tags=["audit"])
 
 # Declared before /audit/{ref} so the literal path always wins the match.
 @router.get("/verify", summary="Recompute the ledger hash chain")
-def verify() -> dict[str, Any]:
-    return ledger.verify_chain()
+def verify(limit: int | None = None) -> dict[str, Any]:
+    # limit allows paginated verify to avoid full scan at 10k rows
+    if limit is not None and (limit < 1 or limit > 10000):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="limit must be 1..10000")
+    return ledger.verify_chain(limit=limit)
 
 
 @router.get("/{ref}", summary="Read one ledger entry, or one entity's trail")

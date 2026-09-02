@@ -162,7 +162,25 @@ export default function Page(){
       if(connectKind==="shopify") r=await fetch(`${API}/merchant/v1/stores/connect/shopify`,{method:"POST", headers:{...headers(),"Content-Type":"application/json"}, body:JSON.stringify({domain:connectForm.domain, token:connectForm.token})});
       else if(connectKind==="woocommerce") r=await fetch(`${API}/merchant/v1/stores/connect/woocommerce`,{method:"POST", headers:{...headers(),"Content-Type":"application/json"}, body:JSON.stringify({url:connectForm.url, key:connectForm.key, secret:connectForm.secret})});
       else { const rows=connectForm.csv.split("\n").filter(Boolean).slice(0,5).map((line,idx)=>{ const [sku,title,price,stock]=line.split(","); return {sku:sku||`CSV-${idx}`, title:title||sku||`Item ${idx}`, list_price_inr:parseInt(price||"999",10), stock_qty:parseInt(stock||"10",10), category:"audio_accessories"}; }); r=await fetch(`${API}/merchant/v1/stores/connect/custom`,{method:"POST", headers:{...headers(),"Content-Type":"application/json"}, body:JSON.stringify({rows})}); }
-      const j=await r.json().catch(()=>({})); if(!r.ok) throw new Error(j.detail?.message||j.message||`HTTP ${r.status}`); setToast(`Imported ${j.imported||0} products`); setTimeout(()=>setToast(""),3000); setConnectOpen(false); load();
+      const j=await r.json().catch(()=>({})); if(!r.ok) throw new Error(j.detail?.message||j.message||`HTTP ${r.status}`);
+      // Shopify now returns 202 with job_id (async) — poll job, else sync result
+      if(j.job_id){
+        setToast(`Sync started — polling ${j.job_id.slice(0,8)}...`);
+        setConnectOpen(false);
+        // poll job for up to 60s
+        for(let i=0;i<12;i++){
+          await new Promise(res=>setTimeout(res, 5000));
+          try{
+            const pr = await fetch(`${API}/merchant/v1/stores/sync/${j.job_id}`, {headers: headers()});
+            const pj = await pr.json().catch(()=>({}));
+            if(pj.status==="done"){ setToast(`Imported ${pj.imported||0} products`); break; }
+            if(pj.status==="failed"){ throw new Error(pj.error||"sync failed"); }
+          }catch(e){ if(i===11) throw e; }
+        }
+        load();
+      } else {
+        setToast(`Imported ${j.imported||0} products`); setTimeout(()=>setToast(""),3000); setConnectOpen(false); load();
+      }
     }catch(e){ setError(e.message); }
   }
   if(!authReady){
@@ -224,7 +242,7 @@ export default function Page(){
           <select value={storeId} onChange={e=> setStoreId(e.target.value)}>{stores.map(s=><option key={s} value={s}>{s}</option>)}</select>
           <button onClick={()=>setConnectOpen(true)}>Connect store</button>
           <button onClick={()=>setShowActivity(!showActivity)}>{showActivity?"Hide settings":"Settings"}</button>
-          <button onClick={()=>{ try{sessionStorage.clear()}catch{}; setData(null); setToken(""); }}>Sign out</button>
+          <button onClick={async()=>{ try{ await fetch(`${API}/auth/signout`, {method:"POST", headers: {...headers()}});}catch{}; try{sessionStorage.clear()}catch{}; setData(null); setToken(""); }}>Sign out</button>
         </div>
       </nav>
       <main className="wrap">

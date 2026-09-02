@@ -301,15 +301,20 @@ def _row_to_entry(row) -> LedgerEntry:
     )
 
 
-def verify_chain(conn=None) -> dict[str, Any]:
+def verify_chain(conn=None, limit: int | None = None) -> dict[str, Any]:
     """Recompute the whole chain and report the FIRST break.
 
     Returns `{intact, entries_checked, broken_at, ...}`. `broken_at` is the seq
     of the first entry that fails — which is the edited row itself, since its
     own hash no longer matches its contents.
+    If limit is set, only the last `limit` entries are checked (faster, partial).
     """
     conn = conn or get_connection()
-    rows = conn.execute("SELECT * FROM ledger ORDER BY seq ASC").fetchall()
+    if limit is not None:
+        rows = conn.execute("SELECT * FROM ledger ORDER BY seq DESC LIMIT ?", (int(limit),)).fetchall()
+        rows = list(reversed(rows))
+    else:
+        rows = conn.execute("SELECT * FROM ledger ORDER BY seq ASC").fetchall()
 
     expected_prev = LEDGER_GENESIS_PREV_HASH
     expected_seq = 1
