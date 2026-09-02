@@ -80,11 +80,6 @@ async def connect_shopify(
     base_url = f"https://{body.domain}/admin/api/2024-10" if body.domain else None
     try:
         client = shopify_integration.ShopifyClient(access_token=body.token, base_url=base_url)
-    except Exception:
-        import os
-        os.environ["SHOPIFY_STORE_DOMAIN"] = body.domain
-        os.environ["SHOPIFY_ADMIN_ACCESS_TOKEN"] = body.token
-        client = shopify_integration.ShopifyClient()
     except Exception as exc:
         raise HTTPException(status_code=503, detail={"code": "shopify_unconfigured", "message": str(exc)}) from exc
     # run sync in thread pool so event loop stays responsive - shopify httpx is sync blocking (46s for 100 products)

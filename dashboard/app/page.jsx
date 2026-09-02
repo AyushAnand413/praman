@@ -111,19 +111,19 @@ export default function Page(){
     let cancelled=false;
     let timeout;
     async function poll(){
-      if(cancelled || document.hidden) { timeout=setTimeout(poll, 6000); return; }
+      if(cancelled || document.hidden) { timeout=setTimeout(poll, 20000); return; }
       await load();
-      if(!cancelled) timeout=setTimeout(poll, 6000);
+      if(!cancelled) timeout=setTimeout(poll, 20000);
     }
     load();
-    timeout=setTimeout(poll, 6000);
+    timeout=setTimeout(poll, 20000);
     const onVisible=()=>{ if(!document.hidden) load(); };
     document.addEventListener("visibilitychange", onVisible);
     return()=>{ cancelled=true; clearTimeout(timeout); document.removeEventListener("visibilitychange",onVisible); inflight.current?.abort(); };
   },[token,storeId,load]);
   useEffect(()=>{
     if(token && !data){
-      const t=setTimeout(()=>setRestoreTimeout(true), 8000);
+      const t=setTimeout(()=>setRestoreTimeout(true), 12000);
       return ()=>clearTimeout(t);
     } else setRestoreTimeout(false);
   },[token,data]);
@@ -187,7 +187,7 @@ export default function Page(){
     if(token){
       return <main className="wrap"><div style={{maxWidth:460, margin:"80px auto", textAlign:"center", color:"var(--muted)"}}>
         <div>Restoring session…</div>
-        {restoreTimeout ? <div style={{marginTop:14, fontSize:12, color:"var(--coral)"}}>Taking too long — Neon may be waking (5 sec). <button className="pill dark" style={{marginLeft:8}} onClick={()=>{ setRestoreTimeout(false); load(); }}>Retry</button> <button className="pill dark" style={{marginLeft:6}} onClick={()=>{ try{sessionStorage.clear()}catch{}; setToken(""); setData(null); }}>Sign in again</button></div> : <div style={{marginTop:8, fontSize:11, color:"var(--muted)", opacity:0.7}}>First load after idle takes 3-5 sec</div>}
+        {restoreTimeout ? <div style={{marginTop:14, fontSize:12, color:"var(--coral)"}}>Taking too long — database may be waking (12 sec). <button className="pill dark" style={{marginLeft:8}} onClick={()=>{ setRestoreTimeout(false); load(); }}>Retry</button> <button className="pill dark" style={{marginLeft:6}} onClick={()=>{ try{sessionStorage.clear()}catch{}; setToken(""); setData(null); }}>Sign in again</button></div> : <div style={{marginTop:8, fontSize:11, color:"var(--muted)", opacity:0.7}}>First load after idle takes 3-5 sec</div>}
         {error ? <div className="error" style={{marginTop:12}}>{error}</div> : null}
       </div></main>;
     }

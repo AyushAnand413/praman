@@ -57,8 +57,12 @@ def list_orders(
             raise HTTPException(status_code=400, detail={"code": "bad_state", "message": f"unknown state {state}"})
         all_orders = orders.in_state(state)
     else:
-        for s in orders.STATES:
-            all_orders.extend(orders.in_state(s))
+        # Single query instead of 8 in_state loops (Issue 11)
+        if hasattr(orders, "list_all"):
+            all_orders = orders.list_all()
+        else:
+            for s in orders.STATES:
+                all_orders.extend(orders.in_state(s))
     all_orders.sort(key=lambda o: o.get("created_at", ""), reverse=True)
     sliced = all_orders[:limit]
     # enrich with offer snapshot titles
