@@ -46,21 +46,35 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     request — pre-warm so that the first call is not the slowest. The trusted
     issuer registry gets the same treatment for the same reason, except there the
     cost of a cold start is not latency but a wrong answer.
-    """
-    conn = get_connection()
-    init_db(conn)
-    count = catalog.seed_database(conn=conn)
-    catalog.cache.load(conn)
 
-    # Establish the chain on a fresh database so there is always a genesis
-    # entry to link from. Only on an empty ledger — not once per boot.
-    if ledger.tip(conn)[0] == 0:
-        ledger.append(
-            "system",
-            "ledger.genesis",
-            {"merchant": MERCHANT_NAME, "catalog_skus": count},
-            conn=conn,
-        )
+    Serverless note: Neon free sleeps after 5 min idle. The first request after
+    sleep must wake the DB (5-10s) and still finish before Vercel's
+    FUNCTION_INVOCATION_TIMEOUT (10s hobby / 30s pro). Every DB step here is
+    therefore guarded — a sleeping DB must not crash the function, health must
+    still answer, and the catalog must lazy-load on first real request.
+    """
+    db_ready = False
+    count = 0
+    try:
+        conn = get_connection()
+        init_db(conn)
+        count = catalog.seed_database(conn=conn)
+        catalog.cache.load(conn)
+        db_ready = True
+
+        # Establish the chain on a fresh database so there is always a genesis
+        # entry to link from. Only on an empty ledger — not once per boot.
+        if ledger.tip(conn)[0] == 0:
+            ledger.append(
+                "system",
+                "ledger.genesis",
+                {"merchant": MERCHANT_NAME, "catalog_skus": count},
+                conn=conn,
+            )
+    except Exception as exc:
+        # Neon sleeping / cold-start wake — don't crash the serverless function.
+        # /health will report db: degraded, next request will retry.
+        log.warning("db init deferred (will retry on next request): %s", exc)
 
     # The trusted-issuer registry lives in process memory, so it has to be
     # populated before the first request that presents a mandate. Left empty, a
@@ -77,26 +91,27 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # which refuses purchases instead of authorising them.
         log.warning("demo mandate issuer not registered: %s", exc)
 
-    # Reservations from abandoned two-step checkouts hold discount budget that
-    # nothing else will ever release. Sweep at boot so a restart cannot inherit
-    # yesterday's phantom spend.
     # Seed test merchant for dashboard sign-in (auth page). Keeps frontend design intact.
-    try:
-        from store.auth import create_merchant, get_by_email
-        if not get_by_email("merchant@aether.test", "default"):
-            create_merchant(email="merchant@aether.test", password="praman123", store_id="default")
-            log.info("seeded test merchant merchant@aether.test / praman123 (store default)")
-        if not get_by_email("merchant@voltmart.test", "voltmart"):
-            try:
-                create_merchant(email="merchant@voltmart.test", password="praman123", store_id="voltmart")
-            except Exception:
-                pass
-    except Exception as e:
-        log.warning("auth seed skipped: %s", e)
+    if db_ready:
+        try:
+            from store.auth import create_merchant, get_by_email
+            if not get_by_email("merchant@aether.test", "default"):
+                create_merchant(email="merchant@aether.test", password="praman123", store_id="default")
+                log.info("seeded test merchant merchant@aether.test / praman123 (store default)")
+            if not get_by_email("merchant@voltmart.test", "voltmart"):
+                try:
+                    create_merchant(email="merchant@voltmart.test", password="praman123", store_id="voltmart")
+                except Exception:
+                    pass
+        except Exception as e:
+            log.warning("auth seed skipped: %s", e)
 
-    released = checkout_kernel.expire_abandoned()
-    if released:
-        log.info("released %d abandoned checkout reservation(s)", len(released))
+        try:
+            released = checkout_kernel.expire_abandoned()
+            if released:
+                log.info("released %d abandoned checkout reservation(s)", len(released))
+        except Exception as e:
+            log.warning("expire_abandoned skipped (db wake): %s", e)
 
     missing = [name for name in SECRET_ENV_VARS if not os.environ.get(name)]
     if missing:
@@ -106,9 +121,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # catalog, audit, and shadow-mode paths still work without any of them.
         log.warning("secrets not set: %s", ", ".join(missing))
 
+    try:
+        jm = journal_mode(get_connection()) if db_ready else "deferred"
+    except Exception:
+        jm = "deferred"
     log.info(
-        "ready | POLICY_MODE=%s | %d SKUs cached | journal_mode=%s",
-        POLICY_MODE.value, len(catalog.cache), journal_mode(conn),
+        "ready | POLICY_MODE=%s | %d SKUs cached | journal_mode=%s | db_ready=%s",
+        POLICY_MODE.value, len(catalog.cache), jm, db_ready,
     )
 
     # The MCP transport keeps its own session manager, which has to be running
@@ -190,12 +209,29 @@ def create_app() -> FastAPI:
 
     @app.get("/health", tags=["ops"], summary="Liveness + mode")
     def health() -> dict[str, Any]:
-        return {
-            "status": "ok",
+        # Health must never wait for a sleeping DB — Vercel kills the function
+        # at 10s and the caller sees 504. Return degraded instead of hanging.
+        try:
+            head = ledger.tip()[0]
+            db = "ok"
+        except Exception as exc:
+            head = None
+            db = f"degraded: {exc.__class__.__name__}"
+            log.warning("health db degraded: %s", exc)
+        # Lazy-load catalog if lifespan deferred it (Neon wake)
+        if len(catalog.cache) == 0:
+            try:
+                catalog.cache.load()
+            except Exception:
+                pass
+        body: dict[str, Any] = {
+            "status": "ok" if db == "ok" else "degraded",
             "policy_mode": POLICY_MODE.value,
             "catalog_skus": len(catalog.cache),
-            "ledger_head_seq": ledger.tip()[0],
+            "ledger_head_seq": head,
+            "db": db,
         }
+        return body
 
     return app
 
