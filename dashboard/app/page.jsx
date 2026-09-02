@@ -40,10 +40,10 @@ function humanEvent(e){
 }
 export default function Page(){
   const [token,setToken]=useState("");
-  const [email,setEmail]=useState("merchant@aether.test");
-  const [password,setPassword]=useState("praman123");
-  const [storeId,setStoreId]=useState("default");
-  const [stores,setStores]=useState(["default"]);
+  const [email,setEmail]=useState("");
+  const [password,setPassword]=useState("");
+  const [storeId,setStoreId]=useState("");
+  const [stores,setStores]=useState([]);
   const [data,setData]=useState(null);
   const [orders,setOrders]=useState(null);
   const [selectedOrder,setSelectedOrder]=useState(null);
@@ -114,12 +114,15 @@ export default function Page(){
     } else setRestoreTimeout(false);
   },[token,data]);
   async function handleAuth(){
+    if(!email.trim() || !password.trim()){ setError("Email and password required"); return; }
+    const cleanStore = (storeId.trim().toLowerCase() || "default");
+    if(!/^[a-z0-9-]{2,32}$/.test(cleanStore)){ setError("Store ID: 2-32 chars, lowercase, hyphens only"); return; }
     setError(""); setBusy(true);
     try{
       const path = mode==="signup"? "/auth/signup" : "/auth/signin";
-      const r = await fetch(`${API}${path}`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({email, password, store_id: storeId})});
+      const r = await fetch(`${API}${path}`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({email: email.trim().toLowerCase(), password, store_id: cleanStore})});
       const j = await r.json().catch(()=>({})); if(!r.ok) throw new Error(j.detail?.message||`HTTP ${r.status}`);
-      const tok=j.access_token; setToken(tok); try{ sessionStorage.setItem("praman-token",tok);}catch{}
+      const tok=j.access_token; setToken(tok); setStoreId(cleanStore); try{ sessionStorage.setItem("praman-token",tok); sessionStorage.setItem("store-id",cleanStore);}catch{}
     }catch(e){ setError(e.message||String(e)); }finally{ setBusy(false); }
   }
   async function handlePolicySave(){
@@ -180,17 +183,14 @@ export default function Page(){
         <div className="hero-copy" style={{maxWidth:460, margin:"0 auto"}}>
           <h1 style={{margin:0}}>Sign in to <em>PRAMAN</em></h1>
           <p>One account per store. Approve holds, inspect every AI sale, and verify the hash chain.</p>
-          <div className="field" style={{marginTop:16}}><label>Work email</label><input placeholder="merchant@aether.test" value={email} onChange={e=>setEmail(e.target.value)} /></div>
-          <div className="field"><label>Password</label><input type="password" placeholder="••••••••" value={password} onChange={e=>setPassword(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handleAuth()} /></div>
-          <div className="field"><label>Store</label><select value={storeId} onChange={e=>setStoreId(e.target.value)}>{stores.map(s=><option key={s} value={s}>{s}</option>)}</select></div>
+          <div className="field" style={{marginTop:16}}><label>Work email</label><input placeholder="you@yourstore.com" value={email} onChange={e=>setEmail(e.target.value)} autoComplete="email" autoCapitalize="off" spellCheck={false} required /></div>
+          <div className="field"><label>Password</label><input type="password" placeholder="••••••••" value={password} onChange={e=>setPassword(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handleAuth()} autoComplete={mode==="signup"?"new-password":"current-password"} required /></div>
+          <div className="field"><label>Store ID</label><input placeholder="e.g. gada-electronics (leave blank for default)" value={storeId} onChange={e=>setStoreId(e.target.value.trim().toLowerCase())} autoComplete="off" spellCheck={false} /><div className="muted" style={{fontSize:10, marginTop:4, opacity:0.6}}>One account per store. Store is determined by your signup, not selectable from a list.</div></div>
           <div style={{display:"flex", gap:8, marginTop:14}}>
             <button className="pill approve" style={{flex:1, justifyContent:"center", display:"flex", background:"var(--brass)", color:"#1A1400", borderColor:"var(--brass)", fontWeight:600}} onClick={handleAuth}>{busy?"…": mode==="signup"?"Create account":"Sign in"}</button>
             <button className="pill dark" onClick={()=>setMode(mode==="signup"?"signin":"signup")}>{mode==="signup"?"Have account? Sign in":"Create account"}</button>
           </div>
-          <div className="muted" style={{fontSize:11, marginTop:12, background:"var(--ink)", border:"1px solid var(--line)", borderRadius:8, padding:10, display:"flex", justifyContent:"space-between", alignItems:"center"}}>
-            <span>Demo: <b>merchant@aether.test / praman123</b><br/><span style={{opacity:0.7}}>voltmart same password</span></span>
-            <button className="pill dark" style={{fontSize:10}} onClick={()=>{setEmail("merchant@aether.test"); setPassword("praman123"); setStoreId("default");}}>Use demo</button>
-          </div>
+          <div className="muted" style={{fontSize:10, marginTop:12, textAlign:"center", opacity:0.5}}>Secure sign-in · tokens rotate on each login · demo accounts disabled</div>
           {error? <div className="error" style={{marginTop:10}}>{error}</div>: null}
         </div>
       </main>
