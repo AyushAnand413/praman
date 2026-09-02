@@ -337,10 +337,15 @@ def dashboard(
 ) -> dict[str, Any]:
     _require_merchant_key(merchant_key, authorization)
 
+    # One shared DB connection for the entire dashboard response — avoids
+    # opening separate connections per sub-call (tip, feed, metrics, panels).
+    from store.db import get_connection
+    conn = get_connection()
+
     # verify_chain is O(n) full ledger scan - do NOT run on hot dashboard poll
     # (5.75s abort loop). Use tip() O(1) for chain head; real verify is /audit/verify
     try:
-        head_seq, head_hash = ledger.tip()
+        head_seq, head_hash = ledger.tip(conn)
         verification = {"intact": True, "head_seq": head_seq, "head_hash": head_hash, "broken_at": None}
     except Exception:
         verification = {"intact": None, "head_seq": None, "broken_at": None}
@@ -357,7 +362,7 @@ def dashboard(
         safety = _panel_cache["safety"]
         bounds = _panel_cache["bounds"]
     else:
-        shared_entries = ledger.recent(limit=SAFETY_SCAN_DEPTH)
+        shared_entries = ledger.recent(limit=SAFETY_SCAN_DEPTH, conn=conn)
         safety = _safety_panel(shared_entries)
         bounds = _bounds_panel(shared_entries)
         _panel_cache["ts"] = now
@@ -375,7 +380,7 @@ def dashboard(
             ),
             "warning": settings.POLICY_MODE.value == "shadow",
         },
-        "metrics": _metrics(),
+        "metrics": _metrics(conn=conn),
         "approvals": {
             "pending_count": len(pending_q),
             "queue": pending_q,
