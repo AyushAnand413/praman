@@ -68,7 +68,7 @@ def list_stores(
 
 
 @router.post("/stores/connect/shopify", summary="Connect Shopify for a store")
-def connect_shopify(
+async def connect_shopify(
     body: ShopifyConnect,
     merchant_key: str | None = Header(default=None, alias="X-Merchant-Key"),
     store_id: str | None = Header(default=None, alias="X-Store-Id"),
@@ -87,8 +87,13 @@ def connect_shopify(
         client = shopify_integration.ShopifyClient()
     except Exception as exc:
         raise HTTPException(status_code=503, detail={"code": "shopify_unconfigured", "message": str(exc)}) from exc
+    # run sync in thread pool so event loop stays responsive - shopify httpx is sync blocking (46s for 100 products)
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
     try:
-        result = shopify_integration.sync_catalog(client)
+        loop = asyncio.get_running_loop()
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            result = await loop.run_in_executor(pool, lambda: shopify_integration.sync_catalog(client))
     except shopify_integration.ShopifyError as exc:
         raise HTTPException(status_code=502, detail={"code": "shopify_error", "message": str(exc)}) from exc
     ledger.append(
