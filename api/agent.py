@@ -194,22 +194,32 @@ def catalog_query(body: CatalogRequest) -> dict[str, Any]:
     results = rows[: body.limit]
     elapsed_ms = int((time.perf_counter() - started) * 1000)
 
-    ledger.append(
-        "buyer_agent",
-        "catalog.query",
-        {
-            "agent_id": body.agent_id,
-            # The words are not published; the shape of the request is. Same rule
-            # the offer path follows, and for the same reason: /audit is public.
-            "need_chars": len(query),
-            "need_sha256": offer_kernel.need_fingerprint(query) if query else None,
-            "category": body.category,
-            "budget_inr": body.budget_inr,
-            "results": len(results),
-            "matched": len(rows),
-            "latency_ms": elapsed_ms,
-        },
-    )
+    # Sample catalog.query ledger writes to avoid bloat: every search was
+    # appending a row and making dashboard safety scans (300 rows) slower over
+    # time. Keep 10% by default, or set PRAMAN_CATALOG_LOG_SAMPLE env.
+    import os as _os, random as _rnd
+    try:
+        _sample = float(_os.environ.get("PRAMAN_CATALOG_LOG_SAMPLE", "0.1"))
+    except Exception:
+        _sample = 0.1
+    if _rnd.random() < _sample:
+        try:
+            ledger.append(
+                "buyer_agent",
+                "catalog.query",
+                {
+                    "agent_id": body.agent_id,
+                    "need_chars": len(query),
+                    "need_sha256": offer_kernel.need_fingerprint(query) if query else None,
+                    "category": body.category,
+                    "budget_inr": body.budget_inr,
+                    "results": len(results),
+                    "matched": len(rows),
+                    "latency_ms": elapsed_ms,
+                },
+            )
+        except Exception:
+            pass
 
     return {
         "results": results,
