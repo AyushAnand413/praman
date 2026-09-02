@@ -404,7 +404,7 @@ def connect(path: Path | str | None = None):  # path ignored - Postgres only
             keepalives_interval=10,
             keepalives_count=3,
             connect_timeout=5,
-            options="-c statement_timeout=8000",
+            options="-c statement_timeout=15000",
         )
         raw.autocommit = False
         return _PGWrapper(raw)
@@ -413,21 +413,21 @@ def connect(path: Path | str | None = None):  # path ignored - Postgres only
 
 
 def get_connection():
-    """Thread-local connection to Postgres, auto-reconnects if Neon slept."""
+    """Thread-local connection to Postgres, auto-reconnects if closed."""
     conn = getattr(_local, "conn", None)
     if conn is not None:
         try:
-            # lightweight liveness probe; dead Neon connections fail here
-            cur = conn._pg.cursor()
-            cur.execute("SELECT 1")
-            cur.close()
-            return conn
+            # Fast liveness check without extra RTT - SELECT 1 adds 80ms per request
+            # and under Vercel concurrency causes abort storm. Use closed flag.
+            if getattr(conn._pg, "closed", 1) == 0:
+                return conn
         except Exception:
-            try:
-                conn.close()
-            except Exception:
-                pass
-            _local.conn = None
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass
+        _local.conn = None
     conn = _local.conn = connect()
     return conn
 
