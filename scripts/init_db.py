@@ -15,7 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts._console import use_utf8_stdout  # noqa: E402
-from settings import DATABASE_PATH, POLICY_MODE  # noqa: E402
+from settings import DATABASE_URL, POLICY_MODE  # noqa: E402
 from store import catalog, ledger  # noqa: E402
 from store.db import TABLES, existing_tables, get_connection, init_db, journal_mode  # noqa: E402
 
@@ -37,7 +37,9 @@ def main() -> int:
     present = existing_tables(conn)
     missing = [name for name in TABLES if name not in present]
 
-    print(f"database      {DATABASE_PATH}")
+    # mask password for logs
+    safe_url = DATABASE_URL[:60] + "..." if len(DATABASE_URL) > 60 else DATABASE_URL
+    print(f"database      {safe_url}")
     print(f"journal_mode  {journal_mode(conn)}")
     print(f"tables        {len(present)} present, {len(TABLES)} expected")
     for name in TABLES:
