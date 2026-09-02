@@ -320,6 +320,13 @@ def in_state(
     return [dict(row) for row in rows]
 
 
+def list_all(conn: sqlite3.Connection | None = None) -> list[dict[str, Any]]:
+    """All orders in one query — use for dashboard metrics instead of 5 in_state calls."""
+    conn = conn or get_connection()
+    rows = conn.execute("SELECT * FROM orders ORDER BY created_at").fetchall()
+    return [dict(row) for row in rows]
+
+
 # ── reservations ───────────────────────────────────────────────────────────────
 #
 # A two-step checkout takes out stock holds and reserves discount budget, then

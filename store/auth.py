@@ -7,10 +7,13 @@ from __future__ import annotations
 
 import hashlib
 import secrets
-import sqlite3
+from typing import TYPE_CHECKING
 
 from store.db import get_connection, transaction
 from store.timestamps import utc_now, to_ts
+
+if TYPE_CHECKING:
+    from store.db import _PGWrapper
 
 
 def _hash_password(password: str, salt_hex: str) -> str:
@@ -19,7 +22,7 @@ def _hash_password(password: str, salt_hex: str) -> str:
     return dk.hex()
 
 
-def create_merchant(*, email: str, password: str, store_id: str = "default", conn: sqlite3.Connection | None = None) -> dict:
+def create_merchant(*, email: str, password: str, store_id: str = "default", conn: " _PGWrapper | None" = None) -> dict:
     email = email.strip().lower()
     if "@" not in email or len(password) < 6:
         raise ValueError("email must contain @ and password >=6 chars")
@@ -37,19 +40,19 @@ def create_merchant(*, email: str, password: str, store_id: str = "default", con
     return dict(row)
 
 
-def get_by_email(email: str, store_id: str = "default", conn: sqlite3.Connection | None = None) -> dict | None:
+def get_by_email(email: str, store_id: str = "default", conn: " _PGWrapper | None" = None) -> dict | None:
     conn = conn or get_connection()
     row = conn.execute("SELECT * FROM merchants WHERE email = ? AND store_id = ?", (email.strip().lower(), store_id)).fetchone()
     return dict(row) if row else None
 
 
-def get_by_token(token: str, conn: sqlite3.Connection | None = None) -> dict | None:
+def get_by_token(token: str, conn: " _PGWrapper | None" = None) -> dict | None:
     conn = conn or get_connection()
     row = conn.execute("SELECT * FROM merchants WHERE active_token = ?", (token,)).fetchone()
     return dict(row) if row else None
 
 
-def verify_password(email: str, password: str, store_id: str = "default", conn: sqlite3.Connection | None = None) -> dict | None:
+def verify_password(email: str, password: str, store_id: str = "default", conn: " _PGWrapper | None" = None) -> dict | None:
     row = get_by_email(email, store_id, conn=conn)
     if not row:
         return None
@@ -59,7 +62,7 @@ def verify_password(email: str, password: str, store_id: str = "default", conn: 
     return row
 
 
-def rotate_token(merchant_id: str, conn: sqlite3.Connection | None = None) -> str:
+def rotate_token(merchant_id: str, conn: " _PGWrapper | None" = None) -> str:
     conn = conn or get_connection()
     token = secrets.token_hex(32)
     conn.execute("UPDATE merchants SET active_token = ? WHERE merchant_id = ?", (token, merchant_id))
