@@ -790,12 +790,38 @@ def _proceed_to_payment(
     )
 
     if payment_id is None:
+        # Try to create a hosted payment link for chat UX (optional, never blocks checkout)
+        # Skip during tests to avoid real network call
+        import os
+
+        payment_url = None
+        if not os.getenv("PYTEST_CURRENT_TEST"):
+            try:
+                link = client.create_payment_link(
+                    amount_inr,
+                    reference_id=order_id,
+                    order_id=gateway_order["id"],
+                    description=f"Aether Audio order {order_id} — ₹{amount_inr}",
+                    notes={"order_id": order_id, "offer_id": offer["offer_id"]},
+                )
+                payment_url = link.get("short_url")
+            except Exception:
+                pass
         # The buyer completes Checkout, then `settle` captures. The order stays
         # PENDING: nothing has been authorised yet, and the hold keeps the stock
         # for the length of its TTL. The reservation recorded above is what lets
         # that later, separate request commit the right holds and release the
         # right budget — and what lets `expire_abandoned` clean up if the buyer
         # never comes back at all.
+        razorpay_payload: dict[str, Any] = {
+            "order_id": gateway_order["id"],
+            "amount_inr": gateway_order["amount_inr"],
+            "currency": gateway_order["currency"],
+            "key_id": client.key_id,
+        }
+        if payment_url:
+            razorpay_payload["payment_url"] = payment_url
+            razorpay_payload["payment_link"] = payment_url
         result = CheckoutResult(
             order_id=order_id,
             status=STATUS_AWAITING_PAYMENT,
@@ -806,12 +832,7 @@ def _proceed_to_payment(
             audit_url=audit_url_for(order_id),
             policy_receipt=policy_receipt,
             reasons=reasons,
-            razorpay={
-                "order_id": gateway_order["id"],
-                "amount_inr": gateway_order["amount_inr"],
-                "currency": gateway_order["currency"],
-                "key_id": client.key_id,
-            },
+            razorpay=razorpay_payload,
         )
         idempotency.complete(
             idempotency_key, response=result.as_payload(), order_id=order_id

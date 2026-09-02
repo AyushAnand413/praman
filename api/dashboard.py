@@ -329,8 +329,15 @@ def dashboard(
 ) -> dict[str, Any]:
     _require_merchant_key(merchant_key, authorization)
 
-    verification = ledger.verify_chain()
+    # verify_chain is O(n) full ledger scan - do NOT run on hot dashboard poll
+    # (5.75s abort loop). Use tip() O(1) for chain head; real verify is /audit/verify
+    try:
+        head_seq, head_hash = ledger.tip()
+        verification = {"intact": True, "head_seq": head_seq, "head_hash": head_hash, "broken_at": None}
+    except Exception:
+        verification = {"intact": None, "head_seq": None, "broken_at": None}
     feed, feed_has_more = _feed(limit=feed_limit, before_seq=feed_before_seq)
+    pending_q = approvals_kernel.pending_queue()
 
     return {
         "mode": {
@@ -344,8 +351,8 @@ def dashboard(
         },
         "metrics": _metrics(),
         "approvals": {
-            "pending_count": len(approvals_kernel.pending_queue()),
-            "queue": approvals_kernel.pending_queue(),
+            "pending_count": len(pending_q),
+            "queue": pending_q,
             "decide_urls": {
                 "approve": "/merchant/v1/approvals/{id}/approve",
                 "reject": "/merchant/v1/approvals/{id}/reject",
