@@ -386,16 +386,25 @@ def connect(path: Path | str | None = None):  # path ignored - Postgres only
         import psycopg2
         import psycopg2.extras
 
-        # keepalives detect a Neon sleep/kill quickly instead of hanging 5m
+        # keepalives detect a sleep/kill quickly instead of hanging 5m.
+        # Neon free sleeps after 5 min idle; Supabase stays warm for 7 days.
+        # connect_timeout=5 so a sleeping DB fails fast and the caller can
+        # return degraded health instead of hitting Vercel's 10s timeout.
         # channel_binding is not supported by libpq on Vercel - caller should strip it from URL
+        # Strip channel_binding if present (Neon adds it, Supabase doesn't)
+        dsn = DATABASE_URL
+        if "channel_binding=" in dsn:
+            import re as _re
+            dsn = _re.sub(r"[&?]channel_binding=[^&]*", "", dsn)
         raw = psycopg2.connect(
-            DATABASE_URL,
+            dsn,
             cursor_factory=psycopg2.extras.RealDictCursor,
             keepalives=1,
             keepalives_idle=30,
             keepalives_interval=10,
             keepalives_count=3,
-            connect_timeout=10,
+            connect_timeout=5,
+            options="-c statement_timeout=8000",
         )
         raw.autocommit = False
         return _PGWrapper(raw)
