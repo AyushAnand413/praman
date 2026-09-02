@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from api.approvals import _require_merchant
@@ -179,10 +179,9 @@ def sync_status(
     return dict(row)
 
 
-@router.post("/stores/connect/shopify", summary="Connect Shopify for a store")
-def connect_shopify(
+@router.post("/stores/connect/shopify", summary="Connect Shopify for a store", status_code=202)
+async def connect_shopify(
     body: ShopifyConnect,
-    background_tasks: BackgroundTasks,
     merchant_key: str | None = Header(default=None, alias="X-Merchant-Key"),
     store_id: str | None = Header(default=None, alias="X-Store-Id"),
     authorization: str | None = Header(default=None, alias="Authorization"),
@@ -190,22 +189,31 @@ def connect_shopify(
     _require_merchant(merchant_key, authorization)
     sid = _use_store(store_id)
     merchant_id = _merchant_id_from_token(authorization)
-    # validate creds quickly
+    # Validate creds quickly — ShopifyClient.__init__ only raises if token is None
+    # and no env var is set; it does NOT connect to Shopify yet (lazy).
     base_url = f"https://{body.domain}/admin/api/2024-10" if body.domain else None
     try:
-        client = shopify_integration.ShopifyClient(access_token=body.token, base_url=base_url)
+        shopify_integration.ShopifyClient(access_token=body.token, base_url=base_url)
     except Exception as exc:
         raise HTTPException(status_code=503, detail={"code": "shopify_unconfigured", "message": str(exc)}) from exc
 
-    # fast path: if token is fake/test, run sync synchronously with timeout handling
-    # For real stores (100 products), use background task to avoid Vercel 10s kill
-    # We do quick check: try one page fetch with short timeout first
     job_id = _create_sync_job(sid, "shopify", merchant_id)
     if merchant_id:
         _record_merchant_store(merchant_id, sid, "shopify", domain=body.domain)
 
-    # Use background task so POST returns 202 immediately (Vercel-safe)
-    background_tasks.add_task(_do_shopify_sync, job_id, sid, body.domain, body.token)
+    # Run sync in a thread via asyncio so the response (202) is sent immediately.
+    # NOTE: On Vercel serverless, FastAPI BackgroundTasks are killed after response
+    # send. asyncio.ensure_future + run_in_executor lets the event loop keep the
+    # thread alive as long as the function container is up (~30s Pro, ~10s Hobby).
+    # For 100-product Shopify stores (~46s), the container may still be killed;
+    # the job row will stay in "running" state and the UI poll will show "pending".
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+    loop = asyncio.get_running_loop()
+    executor = ThreadPoolExecutor(max_workers=1)
+    asyncio.ensure_future(
+        loop.run_in_executor(executor, _do_shopify_sync, job_id, sid, body.domain, body.token)
+    )
 
     return {"status": "accepted", "store_id": sid, "job_id": job_id, "poll_url": f"/merchant/v1/stores/sync/{job_id}"}
 
