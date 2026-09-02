@@ -1,7 +1,7 @@
 "use client";
 import { use, useEffect, useState } from "react";
 import "../../globals.css";
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+import { API } from "../../config";
 function money(n){ return n==null? "—": `\u20B9${Number(n).toLocaleString("en-IN")}`; }
 function fmt(ts){ if(!ts) return ""; try{ return new Date(ts).toLocaleString("en-IN",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"});}catch{ return ts.slice(0,19).replace("T"," ");} }
 function humanStep(e){
@@ -89,8 +89,17 @@ export default function AuditPage({ params }){
                 <details style={{marginTop:6}}><summary style={{fontSize:11, color:"#8B97A6", cursor:"pointer"}}>Show details</summary>
                 <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))", gap:8, marginTop:8}}>
                   <div style={{background:"#0A1014", border:"1px solid #1E2A33", borderRadius:8, padding:8}}><div style={{fontSize:10, color:"#8B97A6", letterSpacing:"0.08em", textTransform:"uppercase"}}>Agent</div><div style={{fontSize:11, marginTop:2, wordBreak:"break-all"}}>{e.payload?.agent_id || e.actor || "—"}</div></div>
-                  <div style={{background:"#0A1014", border:"1px solid #1E2A33", borderRadius:8, padding:8}}><div style={{fontSize:10, color:"#8B97A6", letterSpacing:"0.08em", textTransform:"uppercase"}}>Product / Amount</div><div style={{fontSize:11, marginTop:2}}>{e.payload?.base_sku || e.payload?.sku || "—"} · {e.payload?.amount_inr ? money(e.payload.amount_inr) : e.money_delta_inr ? money(e.money_delta_inr) : "—"}</div></div>
-                  <div style={{background:"#0A1014", border:"1px solid #1E2A33", borderRadius:8, padding:8}}><div style={{fontSize:10, color:"#8B97A6", letterSpacing:"0.08em", textTransform:"uppercase"}}>Gate</div><div style={{fontSize:11, marginTop:2}}>{e.payload?.gate ? `Tier ${e.payload.gate.gate_tier} — ${e.payload.gate.tier_name||""}` : e.event.includes("held") ? "Needs approval" : "—"}</div></div>
+                  <div style={{background:"#0A1014", border:"1px solid #1E2A33", borderRadius:8, padding:8}}><div style={{fontSize:10, color:"#8B97A6", letterSpacing:"0.08em", textTransform:"uppercase"}}>Product / Amount</div><div style={{fontSize:11, marginTop:2}}>{(() => {
+                    const p = e.payload || {};
+                    if (e.event === "razorpay.order.created") return `${(p.razorpay_order_id || "").slice(0,16) || "—"} · ${money(e.money_delta_inr)}`;
+                    if (e.event === "stock.commit_anomaly") {
+                      const ov = p.oversold?.length ? `${p.oversold.length} oversold` : p.recovered?.length ? `${p.recovered.length} recovered` : "Hold reconciled";
+                      return ov;
+                    }
+                    if (e.event === "payment.captured" || e.event === "payment.intent") return `— · ${money(e.money_delta_inr)}`;
+                    return `${p.base_sku || p.sku || p.order_id?.slice(0,12) || "—"} · ${p.amount_inr ? money(p.amount_inr) : e.money_delta_inr ? money(e.money_delta_inr) : "—"}`;
+                  })()}</div></div>
+                  <div style={{background:"#0A1014", border:"1px solid #1E2A33", borderRadius:8, padding:8}}><div style={{fontSize:10, color:"#8B97A6", letterSpacing:"0.08em", textTransform:"uppercase"}}>Gate</div><div style={{fontSize:11, marginTop:2}}>{e.payload?.gate ? `Tier ${e.payload.gate.gate_tier} — ${e.payload.gate.tier_name||""}` : e.payload?.gate_tier ? `Tier ${e.payload.gate_tier}` : e.event.includes("held") ? "Needs approval" : e.event.startsWith("stock.") ? "Stock" : e.event.startsWith("razorpay.") ? "Razorpay" : "—"}</div></div>
                   <div style={{background:"#0A1014", border:"1px solid #1E2A33", borderRadius:8, padding:8}}><div style={{fontSize:10, color:"#8B97A6", letterSpacing:"0.08em", textTransform:"uppercase"}}>Time</div><div style={{fontSize:11, marginTop:2}}>{fmt(e.ts)}</div></div>
                 </div>
                 </details>

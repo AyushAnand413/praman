@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import "../../globals.css";
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+import { API } from "../../config";
 export default function VerifyPage(){
   const [data,setData]=useState(null);
   const [err,setErr]=useState("");

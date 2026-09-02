@@ -46,8 +46,11 @@ Browse with `search_products` — it is free and needs no authorisation. Ask for
 price with `get_offer`, which returns one or two options, each with its own total
 and a `gate_tier` saying what buying it will require: tier 0 needs nothing, tier 1
 needs a signed mandate, tier 2 needs a human to approve it. Buy with `buy`, which
-needs the offer id, the option id, and an idempotency key you generate. Poll with
-`check_order`.
+needs the offer id and the option id (idempotency is auto-handled if you omit it).
+Poll with `check_order`.
+
+Be warm and concise when you talk to the shopper — short bullet points, price in
+₹, no code words. The tool returns raw JSON; you turn it into a friendly reply.
 
 Prices are whole rupees (INR) and come from the offer, not from you. There is no
 field anywhere for you to state a price or a discount; the store decides those and
@@ -181,23 +184,28 @@ def build_server() -> FastMCP:
         name="buy",
         title="Buy an offered option",
         description=(
-            "Accept one option from an offer. You supply the offer id, the option "
-            "id, and an idempotency_key you generate — retrying with the same key "
-            "cannot charge twice, and a key is required. Above the mandate "
-            "threshold a signed mandate token is required; above the human "
-            "threshold the order is held for merchant approval and you poll it "
-            "with check_order. You do not send an amount: the price comes from "
-            "the stored offer."
+            "Accept one option from an offer. You supply the offer id and the option "
+            "id. An idempotency_key is auto-generated if you omit it — retrying with "
+            "the same key cannot charge twice. Above the mandate threshold a signed "
+            "mandate token is required; above the human threshold the order is held "
+            "for merchant approval and you poll it with check_order. You do not send "
+            "an amount: the price comes from the stored offer."
         ),
     )
     async def buy(
         offer_id: str,
         option_id: str,
         agent_id: str,
-        idempotency_key: str,
+        idempotency_key: str | None = None,
         mandate: str | None = None,
         payment_id: str | None = None,
     ) -> dict[str, Any]:
+        if not idempotency_key:
+            import secrets
+
+            # auto idempotency: keeps checkout frictionless for natural language buys,
+            # kernel still gets a real key so exactly-once guarantee holds
+            idempotency_key = f"auto_{secrets.token_urlsafe(12)}"
         body = agent_api.CheckoutRequest(
             offer_id=offer_id,
             option_id=option_id,

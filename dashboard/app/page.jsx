@@ -40,10 +40,10 @@ function humanEvent(e){
 }
 export default function Page(){
   const [token,setToken]=useState("");
-  const [email,setEmail]=useState("merchant@aether.test");
-  const [password,setPassword]=useState("praman123");
-  const [storeId,setStoreId]=useState("default");
-  const [stores,setStores]=useState(["default"]);
+  const [email,setEmail]=useState("");
+  const [password,setPassword]=useState("");
+  const [storeId,setStoreId]=useState("");
+  const [stores,setStores]=useState([]);
   const [data,setData]=useState(null);
   const [orders,setOrders]=useState(null);
   const [selectedOrder,setSelectedOrder]=useState(null);
@@ -59,6 +59,7 @@ export default function Page(){
   const [policy,setPolicy]=useState(null);
   const [policyDraft,setPolicyDraft]=useState(null);
   const [authReady,setAuthReady]=useState(false);
+  const [restoreTimeout,setRestoreTimeout]=useState(false);
   // How many feed entries to ask for. Grows on "Show older" rather than the
   // client stitching pages together, so the 6s poll keeps returning one
   // coherent window instead of racing an accumulated list.
@@ -90,11 +91,13 @@ export default function Page(){
       setData(j);
       try{ sessionStorage.setItem("praman-token",tok); sessionStorage.setItem("store-id",sid);}catch{}
       try{
-        const o = await fetch(`${API}/merchant/v1/orders?limit=12`, opts);
+        const [o, s, p] = await Promise.all([
+          fetch(`${API}/merchant/v1/orders?limit=12`, opts),
+          fetch(`${API}/merchant/v1/stores`, opts),
+          fetch(`${API}/merchant/v1/policy`, opts),
+        ]);
         if(o.ok){ const oj=await o.json(); if(!stale()) setOrders(oj); }
-        const s = await fetch(`${API}/merchant/v1/stores`, opts);
         if(s.ok){ const sj=await s.json(); if(!stale() && sj.stores?.length) setStores(sj.stores); }
-        const p = await fetch(`${API}/merchant/v1/policy`, opts);
         if(p.ok){ const pj=await p.json(); if(!stale()){ setPolicy(pj.policy); setPolicyDraft(pj.policy); } }
       }catch{}
     }catch(e){
@@ -103,14 +106,37 @@ export default function Page(){
     }finally{ if(!stale()) setBusy(false); }
   },[token,storeId]);
   useEffect(()=>{ try{ const tk=sessionStorage.getItem("praman-token"); const ss=sessionStorage.getItem("store-id"); if(tk) setToken(tk); if(ss) setStoreId(ss);}catch{} finally{ setAuthReady(true); } },[]);
-  useEffect(()=>{ if(!token) return; load(); const id=setInterval(()=>{ if(!document.hidden) load(); },6000); const onVisible=()=>{ if(!document.hidden) load(); }; document.addEventListener("visibilitychange", onVisible); return()=>{ clearInterval(id); document.removeEventListener("visibilitychange",onVisible); inflight.current?.abort(); }; },[token,storeId,load]);
+  useEffect(()=>{
+    if(!token) return;
+    let cancelled=false;
+    let timeout;
+    async function poll(){
+      if(cancelled || document.hidden) { timeout=setTimeout(poll, 6000); return; }
+      await load();
+      if(!cancelled) timeout=setTimeout(poll, 6000);
+    }
+    load();
+    timeout=setTimeout(poll, 6000);
+    const onVisible=()=>{ if(!document.hidden) load(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return()=>{ cancelled=true; clearTimeout(timeout); document.removeEventListener("visibilitychange",onVisible); inflight.current?.abort(); };
+  },[token,storeId,load]);
+  useEffect(()=>{
+    if(token && !data){
+      const t=setTimeout(()=>setRestoreTimeout(true), 8000);
+      return ()=>clearTimeout(t);
+    } else setRestoreTimeout(false);
+  },[token,data]);
   async function handleAuth(){
+    if(!email.trim() || !password.trim()){ setError("Email and password required"); return; }
+    const cleanStore = (storeId.trim().toLowerCase() || "default");
+    if(!/^[a-z0-9-]{2,32}$/.test(cleanStore)){ setError("Store ID: 2-32 chars, lowercase, hyphens only"); return; }
     setError(""); setBusy(true);
     try{
       const path = mode==="signup"? "/auth/signup" : "/auth/signin";
-      const r = await fetch(`${API}${path}`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({email, password, store_id: storeId})});
+      const r = await fetch(`${API}${path}`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({email: email.trim().toLowerCase(), password, store_id: cleanStore})});
       const j = await r.json().catch(()=>({})); if(!r.ok) throw new Error(j.detail?.message||`HTTP ${r.status}`);
-      const tok=j.access_token; setToken(tok); try{ sessionStorage.setItem("praman-token",tok);}catch{}
+      const tok=j.access_token; setToken(tok); setStoreId(cleanStore); try{ sessionStorage.setItem("praman-token",tok); sessionStorage.setItem("store-id",cleanStore);}catch{}
     }catch(e){ setError(e.message||String(e)); }finally{ setBusy(false); }
   }
   async function handlePolicySave(){
@@ -159,7 +185,11 @@ export default function Page(){
   // If token exists but data not yet fetched, show restoring, not sign-in — fixes flash on back nav
   if(!data){
     if(token){
-      return <main className="wrap"><div style={{maxWidth:460, margin:"80px auto", textAlign:"center", color:"var(--muted)"}}>Restoring session…</div></main>;
+      return <main className="wrap"><div style={{maxWidth:460, margin:"80px auto", textAlign:"center", color:"var(--muted)"}}>
+        <div>Restoring session…</div>
+        {restoreTimeout ? <div style={{marginTop:14, fontSize:12, color:"var(--coral)"}}>Taking too long — Neon may be waking (5 sec). <button className="pill dark" style={{marginLeft:8}} onClick={()=>{ setRestoreTimeout(false); load(); }}>Retry</button> <button className="pill dark" style={{marginLeft:6}} onClick={()=>{ try{sessionStorage.clear()}catch{}; setToken(""); setData(null); }}>Sign in again</button></div> : <div style={{marginTop:8, fontSize:11, color:"var(--muted)", opacity:0.7}}>First load after idle takes 3-5 sec</div>}
+        {error ? <div className="error" style={{marginTop:12}}>{error}</div> : null}
+      </div></main>;
     }
     return (
       <main className="wrap">
@@ -167,17 +197,16 @@ export default function Page(){
         <div className="hero-copy" style={{maxWidth:460, margin:"0 auto"}}>
           <h1 style={{margin:0}}>Sign in to <em>PRAMAN</em></h1>
           <p>One account per store. Approve holds, inspect every AI sale, and verify the hash chain.</p>
-          <div className="field" style={{marginTop:16}}><label>Work email</label><input placeholder="merchant@aether.test" value={email} onChange={e=>setEmail(e.target.value)} /></div>
-          <div className="field"><label>Password</label><input type="password" placeholder="••••••••" value={password} onChange={e=>setPassword(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handleAuth()} /></div>
-          <div className="field"><label>Store</label><select value={storeId} onChange={e=>setStoreId(e.target.value)}>{stores.map(s=><option key={s} value={s}>{s}</option>)}</select></div>
+          <form onSubmit={(e)=>{e.preventDefault(); handleAuth();}}>
+          <div className="field" style={{marginTop:16}}><label htmlFor="email">Work email</label><input id="email" placeholder="you@yourstore.com" value={email} onChange={e=>setEmail(e.target.value)} autoComplete="email" autoCapitalize="off" spellCheck={false} required aria-required="true" /></div>
+          <div className="field"><label htmlFor="password">Password</label><input id="password" type="password" placeholder="••••••••" value={password} onChange={e=>setPassword(e.target.value)} autoComplete={mode==="signup"?"new-password":"current-password"} required aria-required="true" /></div>
+          <div className="field"><label htmlFor="storeId">Store ID</label><input id="storeId" placeholder="e.g. gada-electronics (leave blank for default)" value={storeId} onChange={e=>setStoreId(e.target.value.trim().toLowerCase())} autoComplete="off" spellCheck={false} aria-label="Store ID" /><div className="muted" style={{fontSize:10, marginTop:4, opacity:0.6}}>One account per store. Store is determined by your signup, not selectable from a list.</div></div>
+          </form>
           <div style={{display:"flex", gap:8, marginTop:14}}>
             <button className="pill approve" style={{flex:1, justifyContent:"center", display:"flex", background:"var(--brass)", color:"#1A1400", borderColor:"var(--brass)", fontWeight:600}} onClick={handleAuth}>{busy?"…": mode==="signup"?"Create account":"Sign in"}</button>
             <button className="pill dark" onClick={()=>setMode(mode==="signup"?"signin":"signup")}>{mode==="signup"?"Have account? Sign in":"Create account"}</button>
           </div>
-          <div className="muted" style={{fontSize:11, marginTop:12, background:"var(--ink)", border:"1px solid var(--line)", borderRadius:8, padding:10, display:"flex", justifyContent:"space-between", alignItems:"center"}}>
-            <span>Demo: <b>merchant@aether.test / praman123</b><br/><span style={{opacity:0.7}}>voltmart same password</span></span>
-            <button className="pill dark" style={{fontSize:10}} onClick={()=>{setEmail("merchant@aether.test"); setPassword("praman123"); setStoreId("default");}}>Use demo</button>
-          </div>
+          <div className="muted" style={{fontSize:10, marginTop:12, textAlign:"center", opacity:0.5}}>Secure sign-in · tokens rotate on each login · demo accounts disabled</div>
           {error? <div className="error" style={{marginTop:10}}>{error}</div>: null}
         </div>
       </main>
@@ -199,10 +228,10 @@ export default function Page(){
         </div>
       </nav>
       <main className="wrap">
-        <div style={{display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:12, marginBottom:14}}>
+        <div className="stat-grid">
           <div className="stat"><div className="k">Revenue today</div><div className="v">{money(m.revenue_inr)}</div><div className="muted" style={{fontSize:11, marginTop:4}}>{m.orders} orders · AOV {money(m.aov_inr)}</div></div>
           <div className="stat"><div className="k">Pending approvals</div><div className="v" style={{color: hasHolds?"var(--amber)":"var(--teal)"}}>{data.approvals.pending_count}</div><div className="muted" style={{fontSize:11, marginTop:4}}>{hasHolds ? "Needs your action — tap Approve" : "All clear"}</div></div>
-          <div className="stat"><div className="k">Ledger</div><div className="v mono" style={{fontSize:14}}>{data.chain.intact? "Verified ✓" : "Broken"}</div><div className="muted" style={{fontSize:11, marginTop:4}}>{data.chain.head_seq} events · <a href="/audit/verify" style={{color:"var(--brass)"}}>verify report</a></div></div>
+          <div className="stat"><div className="k">Ledger</div><div className="v mono" style={{fontSize:14}}>{data.chain.intact===true? "Verified ✓" : data.chain.intact===false? "Broken" : "Checking..."} </div><div className="muted" style={{fontSize:11, marginTop:4}}>{data.chain.head_seq ?? "—"} events · <a href="/audit/verify" style={{color:"var(--brass)"}}>verify report</a></div></div>
         </div>
         {hasHolds ? (
           <div className="panel" style={{borderColor:"var(--amber)", marginBottom:14}}>
@@ -228,24 +257,28 @@ export default function Page(){
         <div className="panel">
           <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6}}>
             <h2 style={{margin:0}}>Recent orders</h2>
-            <span className="muted" style={{fontFamily:"JetBrains Mono, monospace", fontSize:11}}>{storeId} · {orders?.count||0} orders</span>
+            <span className="muted" style={{fontFamily:"JetBrains Mono, monospace", fontSize:11}}>{storeId || "default"} · {orders?.count||0} orders</span>
           </div>
           <p className="muted" style={{fontSize:12, margin:"0 0 10px"}}>Tap an order to see why it was approved and its audit trail.</p>
-          <table className="orders-table">
+          <div className="orders-wrap">
+          <table className="orders-table" role="table" aria-label="Recent orders">
             <thead><tr><th>Order</th><th>Product</th><th>Amount</th><th>Status</th><th>Date</th></tr></thead>
             <tbody>
-              {(orders?.orders||[]).map(o=>(
-                <tr key={o.order_id} onClick={()=>openOrder(o.order_id)}>
+              {orders === null ? (
+                <tr><td colSpan={5}><div className="skeleton skeleton-text" style={{height:40}} /></td></tr>
+              ) : (orders?.orders||[]).map(o=>(
+                <tr key={o.order_id} onClick={()=>openOrder(o.order_id)} onKeyDown={(e)=> e.key==="Enter" && openOrder(o.order_id)} tabIndex={0} role="button" aria-label={`Open order ${o.order_id}`}>
                   <td className="num" style={{fontSize:12}}>{o.order_id.slice(0,13)}…</td>
                   <td style={{maxWidth:260, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"}}>{o.title_summary||o.offer_id}</td>
-                  <td className="num">{money(o.amount_inr)}</td>
+                  <td className="num" style={{textAlign:"right", fontVariantNumeric:"tabular-nums"}}>{money(o.amount_inr)}</td>
                   <td><span className={`state ${o.state}`}>{o.state==="CONFIRMED"?"Paid": o.state==="PENDING"?"Awaiting payment": o.state==="HELD"?"On hold": o.state}</span></td>
                   <td className="muted" style={{fontFamily:"JetBrains Mono, monospace", fontSize:11}}>{fmtDate(o.created_at)}</td>
                 </tr>
               ))}
-              {!(orders?.orders||[]).length? <tr><td colSpan={5} className="muted" style={{padding:14, textAlign:"center"}}>No orders yet. Try <code>python -m scripts.demo_buy</code> in terminal.</td></tr>: null}
+              {orders && !(orders?.orders||[]).length? <tr><td colSpan={5}><div className="empty-state"><p>No orders yet.</p><p className="muted" style={{fontSize:12}}>Share your store link with a buyer agent or test with a Gada product in Shopify.</p></div></td></tr>: null}
             </tbody>
           </table>
+          </div>
           {selectedOrder && drawerData? (
             <div className="drawer">
               <div style={{display:"flex", justifyContent:"space-between", alignItems:"center"}}>
