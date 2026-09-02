@@ -1,7 +1,7 @@
 "use client";
 import { use, useEffect, useState } from "react";
 import "../../globals.css";
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+import { API } from "../../config";
 function money(n){ return n==null? "—": `\u20B9${Number(n).toLocaleString("en-IN")}`; }
 function fmt(ts){ if(!ts) return ""; try{ return new Date(ts).toLocaleString("en-IN",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"});}catch{ return ts.slice(0,19).replace("T"," ");} }
 function humanStep(e){
