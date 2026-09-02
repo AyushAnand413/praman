@@ -11,7 +11,7 @@
   --line: #1E2A33;
   --line-brass: #2A2518;
   --text: #E6E9EF;
-  --muted: #8B97A6;
+  --muted: #9AA8B8;
   --brass: #C8A96A;
   --amber: #E8B84B;
   --teal: #2EC4A5;
@@ -19,6 +19,27 @@
   --coral: #E05A33;
   --coral-dim: #3A1E16;
   --radius: 12px;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-md: 14px;
+  --text-lg: 16px;
+  --text-xl: 20px;
+  --text-2xl: 26px;
+  --text-3xl: 32px;
+  --leading-tight: 1.1;
+  --leading-normal: 1.5;
+  --content-max: 1200px;
+  --z-nav: 20;
+  --z-modal: 50;
 }
 
 * { box-sizing: border-box; }
@@ -69,7 +90,8 @@ body {
 .store-picker button:hover { border-color: var(--brass); }
 :focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
 
-.wrap { max-width: 1280px; margin: 0 auto; padding: 22px 18px 60px; }
+.wrap { max-width: var(--content-max); margin: 0 auto; padding: var(--space-5) var(--space-6) 60px; }
+@media (max-width: 768px) { .wrap { padding: var(--space-4) var(--space-4) 40px; } }
 
 /* Hero thesis — not big number + gradient, but live trace */
 .hero {
@@ -255,8 +277,22 @@ body {
 }
 .info-card-label {
   font-family: JetBrains Mono, monospace; font-size: 10px;
-  letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted);
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted);
 }
 .info-card-value { font-size: 13px; margin-top: 4px; }
 .info-card-sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+/* Professional polish — responsive, skeletons, empty states */
+.stat-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: var(--space-3); margin-bottom: var(--space-4); }
+@media (max-width: 1024px) { .stat-grid { grid-template-columns: repeat(2,1fr); } }
+@media (max-width: 640px) { .stat-grid { grid-template-columns: 1fr; } }
+.orders-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.orders-wrap .orders-table { min-width: 640px; }
+.skeleton { background: linear-gradient(90deg, var(--ink) 25%, #16202A 37%, var(--ink) 63%); background-size: 400% 100%; animation: shimmer 1.2s ease infinite; border-radius: 8px; }
+@keyframes shimmer { 0% { background-position: 100% 0; } 100% { background-position: -100% 0; } }
+.skeleton-text { height: 12px; border-radius: 6px; }
+.empty-state { text-align: center; padding: 24px; color: var(--muted); }
+.empty-state p { margin: 8px 0 0; font-size: 13px; line-height: 1.5; }
+@media (max-width: 768px) { .nav { padding: 10px 16px; } .nav-brand { font-size: 17px; } .store-picker { flex-wrap: wrap; justify-content: flex-end; } }
+@media (max-width: 640px) { .modal { width: 92vw; padding: 14px; } .cards { gap: 8px; } }
 
