@@ -106,7 +106,21 @@ export default function Page(){
     }finally{ if(!stale()) setBusy(false); }
   },[token,storeId]);
   useEffect(()=>{ try{ const tk=sessionStorage.getItem("praman-token"); const ss=sessionStorage.getItem("store-id"); if(tk) setToken(tk); if(ss) setStoreId(ss);}catch{} finally{ setAuthReady(true); } },[]);
-  useEffect(()=>{ if(!token) return; load(); const id=setInterval(()=>{ if(!document.hidden) load(); },6000); const onVisible=()=>{ if(!document.hidden) load(); }; document.addEventListener("visibilitychange", onVisible); return()=>{ clearInterval(id); document.removeEventListener("visibilitychange",onVisible); inflight.current?.abort(); }; },[token,storeId,load]);
+  useEffect(()=>{
+    if(!token) return;
+    let cancelled=false;
+    let timeout;
+    async function poll(){
+      if(cancelled || document.hidden) { timeout=setTimeout(poll, 6000); return; }
+      await load();
+      if(!cancelled) timeout=setTimeout(poll, 6000);
+    }
+    load();
+    timeout=setTimeout(poll, 6000);
+    const onVisible=()=>{ if(!document.hidden) load(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return()=>{ cancelled=true; clearTimeout(timeout); document.removeEventListener("visibilitychange",onVisible); inflight.current?.abort(); };
+  },[token,storeId,load]);
   useEffect(()=>{
     if(token && !data){
       const t=setTimeout(()=>setRestoreTimeout(true), 8000);
