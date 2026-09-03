@@ -90,3 +90,13 @@ AUDIT_REPORT.md
 .playwright-mcp/
 tmp_reports/
 *.report.md
+
+# Playwright & screenshot capture scripts and artifacts (never commit)
+playwright-report/
+test-results/
+scripts/capture_*.py
+scripts/preview_*.py
+scripts/*screenshot*
+*.png
+*.jpg
+*.jpeg
