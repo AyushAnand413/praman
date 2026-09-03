@@ -213,7 +213,7 @@ def create_app() -> FastAPI:
         # at 10s and the caller sees 504. Return degraded instead of hanging.
         # Use a short statement timeout so health never blocks 15s on Supabase pooler.
         try:
-            from store.db import get_connection
+            from store.db import get_connection, reset_connection
             conn = get_connection()
             try:
                 conn.execute("SET LOCAL statement_timeout = '2000'")
@@ -225,6 +225,19 @@ def create_app() -> FastAPI:
             head = None
             db = f"degraded: {exc.__class__.__name__}"
             log.warning("health db degraded: %s", exc)
+            # Rollback + drop thread-local connection so next request gets a
+            # fresh one. Without this, InFailedSqlTransaction persists for the
+            # lifetime of the serverless container.
+            try:
+                from store.db import get_connection as _gc, reset_connection as _rc
+                _gc()._pg.rollback()
+            except Exception:
+                pass
+            try:
+                from store.db import reset_connection as _reset
+                _reset()
+            except Exception:
+                pass
         # Lazy-load catalog if lifespan deferred it (Neon wake)
         if len(catalog.cache) == 0:
             try:
