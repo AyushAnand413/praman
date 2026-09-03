@@ -153,19 +153,20 @@ def _order_economics(
     }
 
 
-def _metrics() -> dict[str, Any]:
+def _metrics(conn=None) -> dict[str, Any]:
     day = utc_day()
     prefix = f"{day}T"
 
-    todays = [
-        order
-        for order in orders.in_state(orders.CONFIRMED)
-        + orders.in_state(orders.CAPTURED)
-        + orders.in_state(orders.REFUNDED)
-        + orders.in_state(orders.FAILED)
-        + orders.in_state(orders.VOIDED)
-        if str(order["created_at"]).startswith(prefix)
-    ]
+    # Single query instead of 5 in_state calls (Issue 3) — filter in Python still,
+    # but 1 round-trip not 5. Uses list_all with optional conn reuse.
+    all_orders = orders.list_all(conn=conn) if hasattr(orders, "list_all") else (
+        orders.in_state(orders.CONFIRMED, conn=conn)
+        + orders.in_state(orders.CAPTURED, conn=conn)
+        + orders.in_state(orders.REFUNDED, conn=conn)
+        + orders.in_state(orders.FAILED, conn=conn)
+        + orders.in_state(orders.VOIDED, conn=conn)
+    )
+    todays = [o for o in all_orders if str(o.get("created_at", "")).startswith(prefix)]
 
     completed = [o for o in todays if o["state"] in _REVENUE_STATES]
     refunded = [o for o in todays if o["state"] in _REFUND_STATES]
@@ -231,8 +232,12 @@ def _payload_names_bound_failing(node: Any, number: int) -> bool:
 #: AI doing lately", large enough that a quiet hour does not read as zero risk.
 SAFETY_SCAN_DEPTH = 300
 
+# Simple 10s cache for safety/bounds to avoid re-scanning 500 rows on every poll
+_panel_cache: dict[str, Any] = {"ts": 0, "entries": None, "safety": None, "bounds": None}
+_PANEL_TTL_S = 10
 
-def _safety_panel() -> dict[str, Any]:
+
+def _safety_panel(entries: list[Any] | None = None) -> dict[str, Any]:
     """The cage at work: what the kernel and saga actually did, counted.
 
     A guard that only claims safety is marketing. These counters show the
@@ -240,7 +245,8 @@ def _safety_panel() -> dict[str, Any]:
     zeros rather than hidden. Computed from ledger events so the dashboard can
     never disagree with the audit trail it links to.
     """
-    entries = ledger.recent(limit=SAFETY_SCAN_DEPTH)
+    if entries is None:
+        entries = ledger.recent(limit=SAFETY_SCAN_DEPTH)
     bound_firings: dict[int, int] = {}
     event_counts: dict[str, int] = {}
 
@@ -278,7 +284,7 @@ def _safety_panel() -> dict[str, Any]:
     }
 
 
-def _bounds_panel() -> list[dict[str, Any]]:
+def _bounds_panel(entries: list[Any] | None = None) -> list[dict[str, Any]]:
     """The ten standing rules, named as they appear publicly."""
     values = {
         1: f"<={settings.MAX_DISCOUNT_PCT_PER_SKU}% per SKU",
@@ -292,9 +298,11 @@ def _bounds_panel() -> list[dict[str, Any]]:
         9: "idempotency key required",
         10: "upsells must relate to the base item",
     }
-    recent_payloads = [
-        entry.payload for entry in ledger.recent(limit=200)
-    ]
+    if entries is None:
+        recent_payloads = [e.payload for e in ledger.recent(limit=200)]
+    else:
+        # Reuse the shared 300-row scan — first 200 is enough for bounds
+        recent_payloads = [e.payload for e in entries[:200]]
     panel = []
     for number in sorted(BOUND_IDS):
         panel.append(
@@ -329,15 +337,38 @@ def dashboard(
 ) -> dict[str, Any]:
     _require_merchant_key(merchant_key, authorization)
 
+    # One shared DB connection for the entire dashboard response — avoids
+    # opening separate connections per sub-call (tip, feed, metrics, panels).
+    from store.db import get_connection
+    conn = get_connection()
+
     # verify_chain is O(n) full ledger scan - do NOT run on hot dashboard poll
     # (5.75s abort loop). Use tip() O(1) for chain head; real verify is /audit/verify
     try:
-        head_seq, head_hash = ledger.tip()
+        head_seq, head_hash = ledger.tip(conn)
         verification = {"intact": True, "head_seq": head_seq, "head_hash": head_hash, "broken_at": None}
     except Exception:
         verification = {"intact": None, "head_seq": None, "broken_at": None}
     feed, feed_has_more = _feed(limit=feed_limit, before_seq=feed_before_seq)
     pending_q = approvals_kernel.pending_queue()
+
+    # One shared ledger scan for both panels (300 rows) + 10s TTL cache
+    import time as _time
+    now = _time.monotonic()
+    shared_entries = None
+    use_cache = (now - _panel_cache["ts"] < _PANEL_TTL_S) and _panel_cache["entries"] is not None
+    if use_cache:
+        shared_entries = _panel_cache["entries"]
+        safety = _panel_cache["safety"]
+        bounds = _panel_cache["bounds"]
+    else:
+        shared_entries = ledger.recent(limit=SAFETY_SCAN_DEPTH, conn=conn)
+        safety = _safety_panel(shared_entries)
+        bounds = _bounds_panel(shared_entries)
+        _panel_cache["ts"] = now
+        _panel_cache["entries"] = shared_entries
+        _panel_cache["safety"] = safety
+        _panel_cache["bounds"] = bounds
 
     return {
         "mode": {
@@ -349,7 +380,7 @@ def dashboard(
             ),
             "warning": settings.POLICY_MODE.value == "shadow",
         },
-        "metrics": _metrics(),
+        "metrics": _metrics(conn=conn),
         "approvals": {
             "pending_count": len(pending_q),
             "queue": pending_q,
@@ -367,8 +398,8 @@ def dashboard(
             # when the page is empty, because there is then nothing to page from.
             "next_before_seq": feed[0]["seq"] if feed else None,
         },
-        "bounds": _bounds_panel(),
-        "safety": _safety_panel(),
+        "bounds": bounds,
+        "safety": safety,
         "chain": {
             "intact": verification["intact"],
             "head_seq": verification.get("head_seq"),

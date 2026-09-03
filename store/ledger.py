@@ -28,7 +28,6 @@ rewrite the entire chain. Claiming immutability would be false.
 
 from __future__ import annotations
 
-import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -113,7 +112,7 @@ def _hash_core(
     }
 
 
-def tip(conn: sqlite3.Connection | None = None) -> tuple[int, str]:
+def tip(conn=None) -> tuple[int, str]:
     """(seq, entry_hash) of the newest entry, or (0, genesis) when empty."""
     conn = conn or get_connection()
     row = conn.execute(
@@ -132,7 +131,7 @@ def append(
     money_delta_inr: int = 0,
     reason: str = "",
     policy_mode: str | None = None,
-    conn: sqlite3.Connection | None = None,
+    conn=None,
 ) -> LedgerEntry:
     """Append one entry. The only writer.
 
@@ -164,8 +163,14 @@ def append(
     conn = conn or get_connection()
     # The lock covers read-tip -> compute-hash -> insert as one unit; without
     # it two threads could chain off the same tip and produce a fork.
+    # On Vercel multi-process, threading.Lock is insufficient -> also take
+    # a Postgres advisory xact lock (no-op on SQLite/test).
     with write_lock:
         with transaction(conn):
+            try:
+                conn.execute("SELECT pg_advisory_xact_lock(424242)")
+            except Exception:
+                pass
             prev_seq, prev_hash = tip(conn)
             seq = prev_seq + 1
             digest = entry_hash(
@@ -204,7 +209,7 @@ def append(
     )
 
 
-def get(seq: int, conn: sqlite3.Connection | None = None) -> LedgerEntry | None:
+def get(seq: int, conn=None) -> LedgerEntry | None:
     conn = conn or get_connection()
     row = conn.execute("SELECT * FROM ledger WHERE seq = ?", (seq,)).fetchone()
     return _row_to_entry(row) if row else None
@@ -212,7 +217,7 @@ def get(seq: int, conn: sqlite3.Connection | None = None) -> LedgerEntry | None:
 
 def recent(
     limit: int = 50,
-    conn: sqlite3.Connection | None = None,
+    conn=None,
     before_seq: int | None = None,
 ) -> list[LedgerEntry]:
     """Newest entries first — the dashboard's live feed.
@@ -246,7 +251,7 @@ _TRAIL_SQL = "SELECT * FROM ledger WHERE " + " OR ".join(
 ) + " ORDER BY seq"
 
 
-def trail(entity_id: str, conn: sqlite3.Connection | None = None) -> list[LedgerEntry]:
+def trail(entity_id: str, conn=None) -> list[LedgerEntry]:
     """Every entry mentioning one order, offer, session, or approval.
 
     This is what `/audit/{order_id}` serves: the complete story of one
@@ -260,7 +265,7 @@ def trail(entity_id: str, conn: sqlite3.Connection | None = None) -> list[Ledger
 
 
 def find_by_payload(
-    key: str, value: str, conn: sqlite3.Connection | None = None
+    key: str, value: str, conn=None
 ) -> list[LedgerEntry]:
     """Entries whose payload has `key` equal to `value`, oldest first.
 
@@ -279,7 +284,7 @@ def find_by_payload(
     return [_row_to_entry(row) for row in rows]
 
 
-def _row_to_entry(row: sqlite3.Row) -> LedgerEntry:
+def _row_to_entry(row) -> LedgerEntry:
     import json
 
     return LedgerEntry(
@@ -296,15 +301,20 @@ def _row_to_entry(row: sqlite3.Row) -> LedgerEntry:
     )
 
 
-def verify_chain(conn: sqlite3.Connection | None = None) -> dict[str, Any]:
+def verify_chain(conn=None, limit: int | None = None) -> dict[str, Any]:
     """Recompute the whole chain and report the FIRST break.
 
     Returns `{intact, entries_checked, broken_at, ...}`. `broken_at` is the seq
     of the first entry that fails — which is the edited row itself, since its
     own hash no longer matches its contents.
+    If limit is set, only the last `limit` entries are checked (faster, partial).
     """
     conn = conn or get_connection()
-    rows = conn.execute("SELECT * FROM ledger ORDER BY seq ASC").fetchall()
+    if limit is not None:
+        rows = conn.execute("SELECT * FROM ledger ORDER BY seq DESC LIMIT ?", (int(limit),)).fetchall()
+        rows = list(reversed(rows))
+    else:
+        rows = conn.execute("SELECT * FROM ledger ORDER BY seq ASC").fetchall()
 
     expected_prev = LEDGER_GENESIS_PREV_HASH
     expected_seq = 1
