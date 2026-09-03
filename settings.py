@@ -427,7 +427,7 @@ GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
 # one retry) and still has the whole kernel evaluation to do afterwards. A model
 # that has not answered by then is slower than the deterministic fallback, so
 # waiting longer costs the buyer time and buys nothing.
-GEMINI_TIMEOUT_SECONDS = float(os.environ.get("GEMINI_TIMEOUT_SECONDS", "12"))
+GEMINI_TIMEOUT_SECONDS = float(os.environ.get("GEMINI_TIMEOUT_SECONDS", "30"))
 
 # Low but not zero. Some variety in the sales prose is the point of using a model
 # at all; the numbers it returns are re-checked by the kernel either way, so
