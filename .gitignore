@@ -79,3 +79,6 @@ dashboard/.env.*.local
 output/
 tmp/
 temp/
+
+# Live QA — local only, never commit
+VERCEL_LIVE_QA.md
