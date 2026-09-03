@@ -245,12 +245,10 @@ def create_app() -> FastAPI:
                 _reset()
             except Exception:
                 pass
-        # Lazy-load catalog if lifespan deferred it (Neon wake)
-        if len(catalog.cache) == 0:
-            try:
-                catalog.cache.load()
-            except Exception:
-                pass
+        try:
+            catalog.cache.load()
+        except Exception:
+            pass
         body: dict[str, Any] = {
             "status": "ok" if db == "ok" else "degraded",
             "policy_mode": POLICY_MODE.value,

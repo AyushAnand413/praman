@@ -296,3 +296,7 @@ body {
 @media (max-width: 768px) { .nav { padding: 10px 16px; } .nav-brand { font-size: 17px; } .store-picker { flex-wrap: wrap; justify-content: flex-end; } }
 @media (max-width: 640px) { .modal { width: 92vw; padding: 14px; } .cards { gap: 8px; } }
 
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
