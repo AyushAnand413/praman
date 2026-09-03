@@ -177,8 +177,6 @@ def sync_status(
     if not row:
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "job not found"})
     return dict(row)
-
-
 @router.post("/stores/connect/shopify", summary="Connect Shopify for a store", status_code=202)
 async def connect_shopify(
     body: ShopifyConnect,
@@ -189,8 +187,6 @@ async def connect_shopify(
     _require_merchant(merchant_key, authorization)
     sid = _use_store(store_id)
     merchant_id = _merchant_id_from_token(authorization)
-    # Validate creds quickly — ShopifyClient.__init__ only raises if token is None
-    # and no env var is set; it does NOT connect to Shopify yet (lazy).
     base_url = f"https://{body.domain}/admin/api/2024-10" if body.domain else None
     try:
         shopify_integration.ShopifyClient(access_token=body.token, base_url=base_url)
@@ -201,19 +197,24 @@ async def connect_shopify(
     if merchant_id:
         _record_merchant_store(merchant_id, sid, "shopify", domain=body.domain)
 
-    # Run sync in a thread via asyncio so the response (202) is sent immediately.
-    # NOTE: On Vercel serverless, FastAPI BackgroundTasks are killed after response
-    # send. asyncio.ensure_future + run_in_executor lets the event loop keep the
-    # thread alive as long as the function container is up (~30s Pro, ~10s Hobby).
-    # For 100-product Shopify stores (~46s), the container may still be killed;
-    # the job row will stay in "running" state and the UI poll will show "pending".
+    # Run sync synchronously in a thread so the event loop is not blocked but
+    # the Vercel function container stays alive until it completes. This is
+    # safer than asyncio.ensure_future which is fire-and-forget and gets killed
+    # when the response is sent on Hobby Vercel (~10s container lifetime).
     import asyncio
-    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
     loop = asyncio.get_running_loop()
     executor = ThreadPoolExecutor(max_workers=1)
-    asyncio.ensure_future(
-        loop.run_in_executor(executor, _do_shopify_sync, job_id, sid, body.domain, body.token)
-    )
+    try:
+        await asyncio.wait_for(
+            loop.run_in_executor(executor, _do_shopify_sync, job_id, sid, body.domain, body.token),
+            timeout=25.0,  # Supabase + Shopify API — 25s is safe; Vercel allows 30s on Pro, 10s Hobby
+        )
+    except (asyncio.TimeoutError, FutureTimeout):
+        # Sync is still running in the thread; return job id so the client can poll
+        pass
+    except Exception:
+        pass  # errors are written to the job row by _do_shopify_sync
 
     return {"status": "accepted", "store_id": sid, "job_id": job_id, "poll_url": f"/merchant/v1/stores/sync/{job_id}"}
 

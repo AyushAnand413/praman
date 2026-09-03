@@ -157,16 +157,12 @@ def _metrics(conn=None) -> dict[str, Any]:
     day = utc_day()
     prefix = f"{day}T"
 
-    # Single query instead of 5 in_state calls (Issue 3) — filter in Python still,
-    # but 1 round-trip not 5. Uses list_all with optional conn reuse.
-    all_orders = orders.list_all(conn=conn) if hasattr(orders, "list_all") else (
-        orders.in_state(orders.CONFIRMED, conn=conn)
-        + orders.in_state(orders.CAPTURED, conn=conn)
-        + orders.in_state(orders.REFUNDED, conn=conn)
-        + orders.in_state(orders.FAILED, conn=conn)
-        + orders.in_state(orders.VOIDED, conn=conn)
+    # list_today filters in SQL (WHERE created_at LIKE 'YYYY-MM-DD%') — single scan
+    # instead of loading all orders ever and filtering in Python.
+    todays = orders.list_today(day, conn=conn) if hasattr(orders, "list_today") else (
+        [o for o in orders.list_all(conn=conn)
+         if str(o.get("created_at", "")).startswith(prefix)]
     )
-    todays = [o for o in all_orders if str(o.get("created_at", "")).startswith(prefix)]
 
     completed = [o for o in todays if o["state"] in _REVENUE_STATES]
     refunded = [o for o in todays if o["state"] in _REFUND_STATES]
@@ -230,11 +226,12 @@ def _payload_names_bound_failing(node: Any, number: int) -> bool:
 
 #: The window the safety panel counts over. Recent enough to be "what is the
 #: AI doing lately", large enough that a quiet hour does not read as zero risk.
-SAFETY_SCAN_DEPTH = 300
+SAFETY_SCAN_DEPTH = 100
 
-# Simple 10s cache for safety/bounds to avoid re-scanning 500 rows on every poll
+# Simple 60s cache for safety/bounds — these panels don't need sub-second freshness.
+# NOTE: cache is process-local; on Vercel each cold invocation starts fresh.
 _panel_cache: dict[str, Any] = {"ts": 0, "entries": None, "safety": None, "bounds": None}
-_PANEL_TTL_S = 10
+_PANEL_TTL_S = 60
 
 
 def _safety_panel(entries: list[Any] | None = None) -> dict[str, Any]:

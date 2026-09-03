@@ -84,7 +84,7 @@ export default function Page(){
       const authH = { "Authorization": `Bearer ${tok}`, "X-Store-Id": sid };
       const opts = { headers: authH, signal: ctl.signal };
       const r = await fetch(`${API}/merchant/v1/dashboard?feed_limit=${feedLimit}`, { ...opts, cache:"no-store"});
-      if(r.status===401) throw new Error("invalid session — sign in again");
+      if(r.status===401){ try{ sessionStorage.removeItem("praman-token"); sessionStorage.removeItem("store-id"); }catch{} setToken(""); setData(null); throw new Error("Session expired — please sign in again"); }
       if(!r.ok) throw new Error(`API ${r.status}`);
       const j = await r.json();
       if(stale()) return;
