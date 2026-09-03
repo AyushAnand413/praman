@@ -438,14 +438,18 @@ def connect(path: Path | str | None = None):  # path ignored - Postgres only
 
 
 def get_connection():
-    """Thread-local connection to Postgres, auto-reconnects if closed."""
+    """Thread-local connection to Postgres, auto-reconnects if closed or in error state."""
     conn = getattr(_local, "conn", None)
     if conn is not None:
         try:
-            # Fast liveness check without extra RTT - SELECT 1 adds 80ms per request
-            # and under Vercel concurrency causes abort storm. Use closed flag.
-            if getattr(conn._pg, "closed", 1) == 0:
+            pg = conn._pg
+            # closed=0 means open; status=2 means InFailedSqlTransaction — both need reconnect
+            if getattr(pg, "closed", 1) == 0 and getattr(pg, "status", 0) != 2:
                 return conn
+        except Exception:
+            pass
+        try:
+            conn._pg.rollback()
         except Exception:
             pass
         try:
