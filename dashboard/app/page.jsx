@@ -44,6 +44,8 @@ export default function Page(){
   const [password,setPassword]=useState("");
   const [storeId,setStoreId]=useState("");
   const [stores,setStores]=useState([]);
+  const [storesData,setStoresData]=useState(null);
+  const [syncState,setSyncState]=useState({busy:false, progress:"", error:"", success:""});
   const [data,setData]=useState(null);
   const [orders,setOrders]=useState(null);
   const [selectedOrder,setSelectedOrder]=useState(null);
@@ -97,7 +99,13 @@ export default function Page(){
           fetch(`${API}/merchant/v1/policy`, opts),
         ]);
         if(o.ok){ const oj=await o.json(); if(!stale()) setOrders(oj); }
-        if(s.ok){ const sj=await s.json(); if(!stale() && sj.stores?.length) setStores(sj.stores); }
+        if(s.ok){
+          const sj=await s.json();
+          if(!stale()) {
+            if(sj.stores?.length) setStores(sj.stores);
+            setStoresData(sj);
+          }
+        }
         if(p.ok){ const pj=await p.json(); if(!stale()){ setPolicy(pj.policy); setPolicyDraft(pj.policy); } }
       }catch{}
     }catch(e){
@@ -157,31 +165,49 @@ export default function Page(){
   }
   async function openOrder(orderId){ setSelectedOrder(orderId); try{ const r=await fetch(`${API}/merchant/v1/orders/${orderId}`,{headers: headers()}); if(r.ok) setDrawerData(await r.json()); }catch{} }
   async function doConnect(){
+    setSyncState({busy: true, progress: "Connecting to store and requesting sync...", error: "", success: ""});
     try{
       let r;
       if(connectKind==="shopify") r=await fetch(`${API}/merchant/v1/stores/connect/shopify`,{method:"POST", headers:{...headers(),"Content-Type":"application/json"}, body:JSON.stringify({domain:connectForm.domain, token:connectForm.token})});
       else if(connectKind==="woocommerce") r=await fetch(`${API}/merchant/v1/stores/connect/woocommerce`,{method:"POST", headers:{...headers(),"Content-Type":"application/json"}, body:JSON.stringify({url:connectForm.url, key:connectForm.key, secret:connectForm.secret})});
       else { const rows=connectForm.csv.split("\n").filter(Boolean).slice(0,5).map((line,idx)=>{ const [sku,title,price,stock]=line.split(","); return {sku:sku||`CSV-${idx}`, title:title||sku||`Item ${idx}`, list_price_inr:parseInt(price||"999",10), stock_qty:parseInt(stock||"10",10), category:"audio_accessories"}; }); r=await fetch(`${API}/merchant/v1/stores/connect/custom`,{method:"POST", headers:{...headers(),"Content-Type":"application/json"}, body:JSON.stringify({rows})}); }
       const j=await r.json().catch(()=>({})); if(!r.ok) throw new Error(j.detail?.message||j.message||`HTTP ${r.status}`);
-      // Shopify now returns 202 with job_id (async) — poll job, else sync result
       if(j.job_id){
-        setToast(`Sync started — polling ${j.job_id.slice(0,8)}...`);
-        setConnectOpen(false);
-        // poll job for up to 60s
+        setSyncState({busy: true, progress: `Importing catalog from ${connectForm.domain || "store"}...`, error: "", success: ""});
+        let finished = false;
         for(let i=0;i<12;i++){
-          await new Promise(res=>setTimeout(res, 5000));
+          await new Promise(res=>setTimeout(res, 4000));
           try{
             const pr = await fetch(`${API}/merchant/v1/stores/sync/${j.job_id}`, {headers: headers()});
             const pj = await pr.json().catch(()=>({}));
-            if(pj.status==="done"){ setToast(`Imported ${pj.imported||0} products`); break; }
-            if(pj.status==="failed"){ throw new Error(pj.error||"sync failed"); }
+            if(pj.status==="done"){
+              setSyncState({busy: false, progress: "", error: "", success: `Successfully imported ${pj.imported||0} products!`});
+              finished = true;
+              break;
+            }
+            if(pj.status==="failed"){ throw new Error(pj.error||"Sync failed on store provider"); }
+            setSyncState({busy: true, progress: `Fetching products... ${pj.imported||0} items imported (${(i+1)*4}s)`, error: "", success: ""});
           }catch(e){ if(i===11) throw e; }
         }
-        load();
+        if(!finished){
+          setSyncState({busy: false, progress: "", error: "", success: "Sync is running in background! Products are being populated."});
+        }
+        await load();
+        setTimeout(()=>{
+          setConnectOpen(false);
+          setSyncState({busy: false, progress: "", error: "", success: ""});
+        }, 2200);
       } else {
-        setToast(`Imported ${j.imported||0} products`); setTimeout(()=>setToast(""),3000); setConnectOpen(false); load();
+        setSyncState({busy: false, progress: "", error: "", success: `Imported ${j.imported||0} products!`});
+        await load();
+        setTimeout(()=>{
+          setConnectOpen(false);
+          setSyncState({busy: false, progress: "", error: "", success: ""});
+        }, 1800);
       }
-    }catch(e){ setError(e.message); }
+    }catch(e){
+      setSyncState({busy: false, progress: "", error: e.message||String(e), success: ""});
+    }
   }
   if(!authReady){
     return <main className="wrap"><div style={{maxWidth:460, margin:"80px auto", textAlign:"center", color:"var(--muted)"}}>Loading…</div></main>;
@@ -232,20 +258,59 @@ export default function Page(){
   }
   const m=data.metrics;
   const hasHolds = data.approvals.pending_count>0;
+  const activeConn = storesData?.connected?.find(c => c.store_id === storeId) || storesData?.connected?.[0];
+  const currentSkuCount = storesData?.catalog_counts?.[storeId] ?? (data?.metrics?.catalog_skus ?? 0);
   return (
     <>
       <div className={`banner ${data.mode.value}`}>{data.mode.value==="shadow" ? "Demo mode — no real money moves" : "Live — payments are real (test mode)"}</div>
       <nav className="nav">
-        <div className="nav-brand">PRAMAN <i>· {storeId}</i></div>
+        <div className="nav-brand">PRAMAN <i>· {activeConn ? (activeConn.domain || activeConn.platform) : storeId}</i></div>
         <div className="nav-meta">Merchant console</div>
         <div className="store-picker">
+          {activeConn ? (
+            <div style={{display:"flex", alignItems:"center", gap:6, padding:"4px 10px", background:"rgba(46,196,165,0.12)", border:"1px solid rgba(46,196,165,0.3)", borderRadius:8, fontSize:12}}>
+              <span style={{width:8, height:8, borderRadius:"50%", background:"var(--teal)", boxShadow:"0 0 6px var(--teal)", display:"inline-block"}} />
+              <strong style={{color:"var(--teal)", textTransform:"capitalize"}}>{activeConn.platform}:</strong>
+              <span style={{color:"var(--text)", fontFamily:"JetBrains Mono, monospace"}}>{activeConn.domain || activeConn.url || storeId}</span>
+              <span style={{color:"var(--brass)", fontWeight:600}}>({currentSkuCount} SKUs)</span>
+            </div>
+          ) : (
+            <div style={{display:"flex", alignItems:"center", gap:6, padding:"4px 10px", background:"rgba(255,255,255,0.04)", border:"1px solid var(--line)", borderRadius:8, fontSize:12, color:"var(--muted)"}}>
+              <span style={{width:8, height:8, borderRadius:"50%", background:"var(--muted)", opacity:0.4, display:"inline-block"}} />
+              <span>No store connected</span>
+            </div>
+          )}
           <select value={storeId} onChange={e=> setStoreId(e.target.value)}>{stores.map(s=><option key={s} value={s}>{s}</option>)}</select>
-          <button onClick={()=>setConnectOpen(true)}>Connect store</button>
+          <button onClick={()=>{ setConnectForm(f=>({...f, domain: activeConn?.domain || f.domain})); setConnectOpen(true); }}>
+            {activeConn ? "Sync store" : "Connect store"}
+          </button>
           <button onClick={()=>setShowActivity(!showActivity)}>{showActivity?"Hide settings":"Settings"}</button>
           <button onClick={async()=>{ try{ await fetch(`${API}/auth/signout`, {method:"POST", headers: {...headers()}});}catch{}; try{sessionStorage.clear()}catch{}; setData(null); setToken(""); }}>Sign out</button>
         </div>
       </nav>
       <main className="wrap">
+        <div className="panel" style={{marginBottom:14, padding:"14px 18px", display:"flex", justifyContent:"space-between", alignItems:"center", flexWrap:"wrap", gap:12, borderColor: activeConn ? "rgba(46,196,165,0.25)" : "var(--line)", background: activeConn ? "linear-gradient(180deg, rgba(46,196,165,0.06), transparent), var(--graphite)" : "var(--graphite)"}}>
+          <div style={{display:"flex", alignItems:"center", gap:14}}>
+            <div style={{fontSize:26}}>{activeConn ? "🛍️" : "📦"}</div>
+            <div>
+              <div style={{display:"flex", alignItems:"center", gap:8}}>
+                <span style={{fontFamily:"JetBrains Mono, monospace", fontSize:11, letterSpacing:"0.1em", textTransform:"uppercase", color: activeConn ? "var(--teal)" : "var(--muted)", fontWeight:600}}>
+                  {activeConn ? `● Connected to ${activeConn.platform.toUpperCase()}` : "○ Demo Catalog Active"}
+                </span>
+                {activeConn?.connected_at ? <span className="muted" style={{fontSize:11}}>· Synced {fmtDate(activeConn.connected_at)}</span> : null}
+              </div>
+              <h3 style={{margin:"2px 0 0", fontSize:16, color:"var(--text)"}}>
+                {activeConn?.domain || (activeConn ? activeConn.platform : "Aether Demo Catalog")}
+              </h3>
+              <p className="muted" style={{margin:"2px 0 0", fontSize:12}}>
+                <strong style={{color:"var(--text)"}}>{currentSkuCount} products</strong> active in catalog · Protected by PRAMAN 10 policy bounds
+              </p>
+            </div>
+          </div>
+          <button className="pill dark" onClick={()=>{ setConnectForm(f=>({...f, domain: activeConn?.domain || ""})); setConnectOpen(true); }}>
+            {activeConn ? "Sync Again / Reconnect" : "Connect Store"}
+          </button>
+        </div>
         <div className="stat-grid">
           <div className="stat"><div className="k">Revenue today</div><div className="v">{money(m.revenue_inr)}</div><div className="muted" style={{fontSize:11, marginTop:4}}>{m.orders} orders · AOV {money(m.aov_inr)}</div></div>
           <div className="stat"><div className="k">Pending approvals</div><div className="v" style={{color: hasHolds?"var(--amber)":"var(--teal)"}}>{data.approvals.pending_count}</div><div className="muted" style={{fontSize:11, marginTop:4}}>{hasHolds ? "Needs your action — tap Approve" : "All clear"}</div></div>
@@ -380,20 +445,42 @@ export default function Page(){
         {error? <div className="toast" style={{borderColor:"var(--coral)", color:"var(--coral)"}}>{error}</div>: null}
       </main>
       {connectOpen? (
-        <div className="modal-backdrop" onClick={()=>setConnectOpen(false)}>
+        <div className="modal-backdrop" onClick={()=> !syncState.busy && setConnectOpen(false)}>
           <div className="modal" onClick={e=>e.stopPropagation()}>
             <h3>Connect your store</h3>
             <p className="muted" style={{margin:"6px 0 0", fontSize:12}}>Your catalog syncs in, PRAMAN applies the same 10 rules.</p>
-            <div className="cards">
-              {[{k:"shopify", t:"Shopify", d:"Domain + token"}, {k:"woocommerce", t:"WooCommerce", d:"URL + key/secret"}, {k:"custom", t:"Custom / CSV", d:"Paste rows"}].map(c=>(
-                <div key={c.k} className={`card ${connectKind===c.k?"active":""}`} onClick={()=>setConnectKind(c.k)}><h4>{c.t}</h4><p>{c.d}</p></div>
-              ))}
-            </div>
-            {connectKind==="shopify"? (<><div className="field"><label>Shopify domain</label><input placeholder="my-store.myshopify.com" value={connectForm.domain} onChange={e=>setConnectForm({...connectForm, domain:e.target.value})} /></div><div className="field"><label>Admin token</label><input type="password" placeholder="shpat_***" value={connectForm.token} onChange={e=>setConnectForm({...connectForm, token:e.target.value})} /></div></>): connectKind==="woocommerce"? (<><div className="field"><label>Store URL</label><input placeholder="https://myshop.in" value={connectForm.url} onChange={e=>setConnectForm({...connectForm, url:e.target.value})} /></div><div className="field"><label>Consumer Key</label><input placeholder="ck_..." value={connectForm.key} onChange={e=>setConnectForm({...connectForm, key:e.target.value})} /></div><div className="field"><label>Consumer Secret</label><input type="password" placeholder="cs_..." value={connectForm.secret} onChange={e=>setConnectForm({...connectForm, secret:e.target.value})} /></div></>): (<div className="field"><label>CSV — sku,title,price,stock</label><input placeholder="CSV-001,Test Item,999,10" value={connectForm.csv} onChange={e=>setConnectForm({...connectForm, csv:e.target.value})} /></div>)}
-            <div style={{display:"flex", gap:8, justifyContent:"flex-end", marginTop:12}}>
-              <button className="pill dark" onClick={()=>setConnectOpen(false)}>Cancel</button>
-              <button className="pill approve" onClick={doConnect}>Import</button>
-            </div>
+            {syncState.busy ? (
+              <div style={{padding:"32px 16px", textAlign:"center"}}>
+                <div style={{width:36, height:36, border:"3px solid rgba(255,255,255,0.1)", borderTopColor:"var(--teal)", borderRadius:"50%", margin:"0 auto 16px", animation:"spin 0.8s linear infinite"}} />
+                <h4 style={{margin:"0 0 8px", fontSize:16, color:"var(--text)"}}>Syncing Products...</h4>
+                <p style={{margin:0, fontSize:13, color:"var(--teal)"}}>{syncState.progress}</p>
+                <p className="muted" style={{fontSize:11, marginTop:12}}>Please keep this window open while your catalog is imported.</p>
+              </div>
+            ) : syncState.success ? (
+              <div style={{padding:"32px 16px", textAlign:"center"}}>
+                <div style={{fontSize:38, marginBottom:8}}>✅</div>
+                <h4 style={{margin:"0 0 8px", fontSize:18, color:"var(--teal)"}}>Store Connected!</h4>
+                <p style={{margin:0, fontSize:13, color:"var(--text)"}}>{syncState.success}</p>
+              </div>
+            ) : (
+              <>
+                <div className="cards">
+                  {[{k:"shopify", t:"Shopify", d:"Domain + token"}, {k:"woocommerce", t:"WooCommerce", d:"URL + key/secret"}, {k:"custom", t:"Custom / CSV", d:"Paste rows"}].map(c=>(
+                    <div key={c.k} className={`card ${connectKind===c.k?"active":""}`} onClick={()=>setConnectKind(c.k)}><h4>{c.t}</h4><p>{c.d}</p></div>
+                  ))}
+                </div>
+                {connectKind==="shopify"? (<><div className="field"><label>Shopify domain</label><input placeholder="my-store.myshopify.com" value={connectForm.domain} onChange={e=>setConnectForm({...connectForm, domain:e.target.value})} /></div><div className="field"><label>Admin token</label><input type="password" placeholder="shpat_***" value={connectForm.token} onChange={e=>setConnectForm({...connectForm, token:e.target.value})} /></div></>): connectKind==="woocommerce"? (<><div className="field"><label>Store URL</label><input placeholder="https://myshop.in" value={connectForm.url} onChange={e=>setConnectForm({...connectForm, url:e.target.value})} /></div><div className="field"><label>Consumer Key</label><input placeholder="ck_..." value={connectForm.key} onChange={e=>setConnectForm({...connectForm, key:e.target.value})} /></div><div className="field"><label>Consumer Secret</label><input type="password" placeholder="cs_..." value={connectForm.secret} onChange={e=>setConnectForm({...connectForm, secret:e.target.value})} /></div></>): (<div className="field"><label>CSV — sku,title,price,stock</label><input placeholder="CSV-001,Test Item,999,10" value={connectForm.csv} onChange={e=>setConnectForm({...connectForm, csv:e.target.value})} /></div>)}
+                {syncState.error ? (
+                  <div style={{padding:"10px 14px", background:"rgba(224,90,51,0.15)", border:"1px solid var(--coral)", borderRadius:8, color:"var(--coral)", fontSize:12, marginTop:12}}>
+                    {syncState.error}
+                  </div>
+                ) : null}
+                <div style={{display:"flex", gap:8, justifyContent:"flex-end", marginTop:14}}>
+                  <button className="pill dark" onClick={()=>setConnectOpen(false)}>Cancel</button>
+                  <button className="pill approve" onClick={doConnect}>Import</button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       ): null}

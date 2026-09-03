@@ -180,10 +180,9 @@ def list_stores(
     _require_merchant(merchant_key, authorization)
     # persisted stores for this merchant
     merchant_id = _merchant_id_from_token(authorization)
-    persisted = []
+    conn = get_connection()
     if merchant_id:
         try:
-            conn = get_connection()
             rows = conn.execute("SELECT store_id, platform, domain, url, connected_at FROM merchant_stores WHERE merchant_id=?", (merchant_id,)).fetchall()
             persisted = [dict(r) for r in rows]
         except Exception:
@@ -193,6 +192,10 @@ def list_stores(
     for p in persisted:
         if p["store_id"] not in stores:
             stores.append(p["store_id"])
+    try:
+        catalog.cache.load(conn)
+    except Exception:
+        pass
     counts = {}
     for sid in stores:
         try:
