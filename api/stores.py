@@ -5,9 +5,10 @@ No policy. Just plumbing. Scoped by store_id.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
 from api.approvals import _require_merchant
@@ -329,3 +330,74 @@ def connect_custom(
         reason=f"Custom catalog sync for {sid}: {len(pairs)} imported",
     )
     return {"status": "ok", "store_id": sid, "imported": len(pairs), "skipped": 0}
+
+
+@router.get("/catalog", summary="List merchant catalog with guardrails")
+def list_merchant_catalog(
+    merchant_key: str | None = Header(default=None, alias="X-Merchant-Key"),
+    store_id: str | None = Header(default=None, alias="X-Store-Id"),
+    authorization: str | None = Header(default=None, alias="Authorization"),
+    q: str | None = Query(default=None, description="Search query across SKU or Title"),
+    category: str | None = Query(default=None, description="Filter by category"),
+    limit: int = Query(default=300, ge=1, le=1000),
+) -> dict[str, Any]:
+    _require_merchant(merchant_key, authorization)
+    sid = _use_store(store_id)
+    conn = get_connection()
+    try:
+        catalog.cache.load(conn)
+    except Exception:
+        pass
+
+    rows = conn.execute("""
+        SELECT 
+            p.sku, p.title, p.list_price_inr, p.stock_qty, p.category, p.attrs, p.returns_window_days,
+            pp.cost_inr, pp.margin_pct, pp.floor_price_inr, pp.max_discount_pct, pp.offerable, pp.attach_candidates
+        FROM products p
+        LEFT JOIN product_private pp ON p.sku = pp.sku
+        ORDER BY p.title ASC
+    """).fetchall()
+
+    all_items = []
+    categories_set = set()
+    total_stock = 0
+
+    query_norm = q.strip().lower() if isinstance(q, str) and q.strip() else None
+    cat_norm = category.strip().lower() if isinstance(category, str) and category.strip() and category != "all" else None
+    limit_val = limit if isinstance(limit, int) else 300
+
+    for r in rows:
+        d = dict(r)
+        sku = d.get("sku") or ""
+        title = d.get("title") or ""
+        cat = d.get("category") or "general"
+        categories_set.add(cat)
+        stock = int(d.get("stock_qty") or 0)
+        total_stock += stock
+
+        if cat_norm and cat.lower() != cat_norm:
+            continue
+        if query_norm and (query_norm not in title.lower() and query_norm not in sku.lower()):
+            continue
+
+        try:
+            if isinstance(d.get("attrs"), str):
+                d["attrs"] = json.loads(d["attrs"])
+        except Exception:
+            d["attrs"] = {}
+
+        try:
+            if isinstance(d.get("attach_candidates"), str):
+                d["attach_candidates"] = json.loads(d["attach_candidates"])
+        except Exception:
+            d["attach_candidates"] = []
+
+        all_items.append(d)
+
+    return {
+        "store_id": sid,
+        "total_count": len(all_items),
+        "total_stock": total_stock,
+        "categories": sorted(categories_set),
+        "products": all_items[:limit_val],
+    }

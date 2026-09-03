@@ -46,6 +46,12 @@ export default function Page(){
   const [stores,setStores]=useState([]);
   const [storesData,setStoresData]=useState(null);
   const [syncState,setSyncState]=useState({busy:false, progress:"", error:"", success:""});
+  const [activeTab,setActiveTab]=useState("overview");
+  const [catalogData,setCatalogData]=useState(null);
+  const [catalogSearch,setCatalogSearch]=useState("");
+  const [catalogCat,setCatalogCat]=useState("all");
+  const [selectedProduct,setSelectedProduct]=useState(null);
+  const [catalogBusy,setCatalogBusy]=useState(false);
   const [data,setData]=useState(null);
   const [orders,setOrders]=useState(null);
   const [selectedOrder,setSelectedOrder]=useState(null);
@@ -113,6 +119,23 @@ export default function Page(){
       setError(e.message||String(e));
     }finally{ if(!stale()) setBusy(false); }
   },[token,storeId]);
+  const loadCatalog = useCallback(async (q=catalogSearch, cat=catalogCat)=>{
+    if(!token) return;
+    setCatalogBusy(true);
+    try{
+      const params = new URLSearchParams({ limit: "300" });
+      if(q && q.trim()) params.set("q", q.trim());
+      if(cat && cat !== "all") params.set("category", cat);
+      const r = await fetch(`${API}/merchant/v1/catalog?${params.toString()}`, { headers: headers() });
+      if(r.ok){
+        const cj = await r.json();
+        setCatalogData(cj);
+      }
+    }catch(e){
+    }finally{
+      setCatalogBusy(false);
+    }
+  },[token, headers, catalogSearch, catalogCat]);
   useEffect(()=>{ try{ const tk=sessionStorage.getItem("praman-token"); const ss=sessionStorage.getItem("store-id"); if(tk) setToken(tk); if(ss) setStoreId(ss);}catch{} finally{ setAuthReady(true); } },[]);
   useEffect(()=>{
     if(!token) return;
@@ -266,6 +289,22 @@ export default function Page(){
       <nav className="nav">
         <div className="nav-brand">PRAMAN <i>· {activeConn ? (activeConn.domain || activeConn.platform) : storeId}</i></div>
         <div className="nav-meta">Merchant console</div>
+        <div style={{display:"flex", gap:4, background:"var(--ink)", padding:"3px 4px", borderRadius:8, border:"1px solid var(--line)"}}>
+          <button
+            className={`pill ${activeTab==="overview"?"approve":"dark"}`}
+            style={{fontSize:12, padding:"5px 12px", borderRadius:6, cursor:"pointer", border: activeTab==="overview" ? "1px solid var(--brass)" : "1px solid transparent"}}
+            onClick={()=>setActiveTab("overview")}
+          >
+            Overview
+          </button>
+          <button
+            className={`pill ${activeTab==="catalog"?"approve":"dark"}`}
+            style={{fontSize:12, padding:"5px 12px", borderRadius:6, cursor:"pointer", border: activeTab==="catalog" ? "1px solid var(--brass)" : "1px solid transparent"}}
+            onClick={()=>{ setActiveTab("catalog"); loadCatalog(catalogSearch, catalogCat); }}
+          >
+            Catalog <span style={{opacity:0.85, fontSize:11, marginLeft:4}}>({currentSkuCount})</span>
+          </button>
+        </div>
         <div className="store-picker">
           {activeConn ? (
             <div style={{display:"flex", alignItems:"center", gap:6, padding:"4px 10px", background:"rgba(46,196,165,0.12)", border:"1px solid rgba(46,196,165,0.3)", borderRadius:8, fontSize:12}}>
@@ -311,136 +350,355 @@ export default function Page(){
             {activeConn ? "Sync Again / Reconnect" : "Connect Store"}
           </button>
         </div>
-        <div className="stat-grid">
-          <div className="stat"><div className="k">Revenue today</div><div className="v">{money(m.revenue_inr)}</div><div className="muted" style={{fontSize:11, marginTop:4}}>{m.orders} orders · AOV {money(m.aov_inr)}</div></div>
-          <div className="stat"><div className="k">Pending approvals</div><div className="v" style={{color: hasHolds?"var(--amber)":"var(--teal)"}}>{data.approvals.pending_count}</div><div className="muted" style={{fontSize:11, marginTop:4}}>{hasHolds ? "Needs your action — tap Approve" : "All clear"}</div></div>
-          <div className="stat"><div className="k">Ledger</div><div className="v mono" style={{fontSize:14}}>{data.chain.intact===true? "Verified ✓" : data.chain.intact===false? "Broken" : "Checking..."} </div><div className="muted" style={{fontSize:11, marginTop:4}}>{data.chain.head_seq ?? "—"} events · <a href="/audit/verify" style={{color:"var(--brass)"}}>verify report</a></div></div>
-        </div>
-        {hasHolds ? (
-          <div className="panel" style={{borderColor:"var(--amber)", marginBottom:14}}>
-            <h2>Needs your approval — {data.approvals.pending_count} held</h2>
-            <p className="muted" style={{fontSize:12, margin:"0 0 10px"}}>Over the auto-approve limit. Nothing auto-approves.</p>
-            {data.approvals.queue.map(a=>(
-              <div className="approval" key={a.approval_id}>
-                <div style={{display:"flex", justifyContent:"space-between", alignItems:"baseline"}}>
-                  <strong className="num" style={{fontSize:16}}>{money(a.amount_inr)}</strong>
-                  <span className="muted" style={{fontFamily:"JetBrains Mono, monospace", fontSize:11}}>{a.order_id}</span>
+        {activeTab === "catalog" ? (
+          <>
+            <div className="stat-grid" style={{marginBottom:14}}>
+              <div className="stat">
+                <div className="k">Total Products</div>
+                <div className="v">{catalogData?.total_count ?? currentSkuCount}</div>
+                <div className="muted" style={{fontSize:11, marginTop:4}}>Active in store catalog</div>
+              </div>
+              <div className="stat">
+                <div className="k">Total Inventory Units</div>
+                <div className="v">{catalogData?.total_stock ? catalogData.total_stock.toLocaleString() : "—"}</div>
+                <div className="muted" style={{fontSize:11, marginTop:4}}>Available stock across all items</div>
+              </div>
+              <div className="stat">
+                <div className="k">PRAMAN Protection</div>
+                <div className="v" style={{fontSize:20, color:"var(--teal)"}}>10 Bounds Active</div>
+                <div className="muted" style={{fontSize:11, marginTop:4}}>Floor price &amp; 12% discount caps enforced</div>
+              </div>
+            </div>
+
+            <div className="panel" style={{marginBottom:14, padding:"14px 16px"}}>
+              <div style={{display:"flex", gap:12, flexWrap:"wrap", alignItems:"center", justifyContent:"space-between"}}>
+                <div style={{display:"flex", gap:10, flex:1, minWidth:260}}>
+                  <input
+                    style={{
+                      flex:1, background:"var(--ink)", color:"var(--text)", border:"1px solid var(--line)",
+                      borderRadius:8, padding:"8px 12px", fontSize:13, fontFamily:"Inter, sans-serif"
+                    }}
+                    placeholder="🔍 Search by product title, brand, or SKU (e.g. Acer, Cable, GE-)..."
+                    value={catalogSearch}
+                    onChange={e => {
+                      setCatalogSearch(e.target.value);
+                      loadCatalog(e.target.value, catalogCat);
+                    }}
+                  />
+                  <select
+                    style={{
+                      background:"var(--ink)", color:"var(--text)", border:"1px solid var(--line)",
+                      borderRadius:8, padding:"8px 12px", fontSize:13, fontFamily:"JetBrains Mono, monospace"
+                    }}
+                    value={catalogCat}
+                    onChange={e => {
+                      setCatalogCat(e.target.value);
+                      loadCatalog(catalogSearch, e.target.value);
+                    }}
+                  >
+                    <option value="all">All Categories ({catalogData?.categories?.length || 0})</option>
+                    {(catalogData?.categories || []).map(c => (
+                      <option key={c} value={c}>{c}</option>
+                    ))}
+                  </select>
                 </div>
-                <div className="muted" style={{fontSize:12, margin:"6px 0"}}>{a.note}</div>
-                <div style={{display:"flex", gap:6, flexWrap:"wrap", marginTop:8}}>
-                  <button className="pill approve" onClick={()=>decide(a.approval_id,"approve")}>Approve</button>
-                  <button className="pill reject" onClick={()=>decide(a.approval_id,"reject")}>Reject</button>
-                  <input id={`cnt-${a.approval_id}`} className="counter-input" placeholder="Counter ₹" />
-                  <button className="pill dark" onClick={()=>doCounter(a.approval_id)}>Send counter</button>
+                <div style={{display:"flex", gap:8}}>
+                  <button className="pill dark" onClick={() => loadCatalog(catalogSearch, catalogCat)}>
+                    {catalogBusy ? "Refreshing..." : "Refresh"}
+                  </button>
+                  <button className="pill approve" onClick={() => setConnectOpen(true)}>
+                    + Import More
+                  </button>
                 </div>
               </div>
-            ))}
-          </div>
-        ): null}
-        <div className="panel">
-          <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6}}>
-            <h2 style={{margin:0}}>Recent orders</h2>
-            <span className="muted" style={{fontFamily:"JetBrains Mono, monospace", fontSize:11}}>{storeId || "default"} · {orders?.count||0} orders</span>
-          </div>
-          <p className="muted" style={{fontSize:12, margin:"0 0 10px"}}>Tap an order to see why it was approved and its audit trail.</p>
-          <div className="orders-wrap">
-          <table className="orders-table" role="table" aria-label="Recent orders">
-            <thead><tr><th>Order</th><th>Product</th><th>Amount</th><th>Status</th><th>Date</th></tr></thead>
-            <tbody>
-              {orders === null ? (
-                <tr><td colSpan={5}><div className="skeleton skeleton-text" style={{height:40}} /></td></tr>
-              ) : (orders?.orders||[]).map(o=>(
-                <tr key={o.order_id} onClick={()=>openOrder(o.order_id)} onKeyDown={(e)=> e.key==="Enter" && openOrder(o.order_id)} tabIndex={0} role="button" aria-label={`Open order ${o.order_id}`}>
-                  <td className="num" style={{fontSize:12}}>{o.order_id.slice(0,13)}…</td>
-                  <td style={{maxWidth:260, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"}}>{o.title_summary||o.offer_id}</td>
-                  <td className="num" style={{textAlign:"right", fontVariantNumeric:"tabular-nums"}}>{money(o.amount_inr)}</td>
-                  <td><span className={`state ${o.state}`}>{o.state==="CONFIRMED"?"Paid": o.state==="PENDING"?"Awaiting payment": o.state==="HELD"?"On hold": o.state}</span></td>
-                  <td className="muted" style={{fontFamily:"JetBrains Mono, monospace", fontSize:11}}>{fmtDate(o.created_at)}</td>
-                </tr>
-              ))}
-              {orders && !(orders?.orders||[]).length? <tr><td colSpan={5}><div className="empty-state"><p>No orders yet.</p><p className="muted" style={{fontSize:12}}>Share your store link with a buyer agent or test with a Gada product in Shopify.</p></div></td></tr>: null}
-            </tbody>
-          </table>
-          </div>
-          {selectedOrder && drawerData? (
-            <div className="drawer">
-              <div style={{display:"flex", justifyContent:"space-between", alignItems:"center"}}>
-                <h3 style={{margin:0}}>Order details — {selectedOrder} <a href={`/audit/${selectedOrder}`} style={{marginLeft:8, fontSize:11, color:"var(--brass)"}}>Open full report →</a></h3>
-                <button onClick={()=>{setSelectedOrder(null); setDrawerData(null);}} className="pill dark">Close</button>
+            </div>
+
+            <div className="panel">
+              <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8}}>
+                <h2 style={{margin:0}}>Product Catalog</h2>
+                <span className="muted" style={{fontFamily:"JetBrains Mono, monospace", fontSize:11}}>
+                  Showing {catalogData?.products?.length ?? 0} of {catalogData?.total_count ?? currentSkuCount} items
+                </span>
               </div>
-              {drawerData.order ? (
-                <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))", gap:10, marginTop:12}}>
-                  <div style={{background:"var(--ink)", border:"1px solid var(--line)", borderRadius:8, padding:10}}><div className="k" style={{fontFamily:"JetBrains Mono, monospace", fontSize:10, letterSpacing:"0.1em", textTransform:"uppercase", color:"var(--muted)"}}>Order</div><div style={{fontSize:13, marginTop:4}}>{drawerData.order.order_id}</div><div className="muted" style={{fontSize:11}}>{fmtDate(drawerData.order.created_at)}</div></div>
-                  <div style={{background:"var(--ink)", border:"1px solid var(--line)", borderRadius:8, padding:10}}><div className="k" style={{fontFamily:"JetBrains Mono, monospace", fontSize:10, letterSpacing:"0.1em", textTransform:"uppercase", color:"var(--muted)"}}>Product</div><div style={{fontSize:13, marginTop:4}}>{orders?.orders?.find(o=>o.order_id===selectedOrder)?.title_summary || drawerData.order.offer_id}</div><div className="muted" style={{fontSize:11}}>Gate T{drawerData.order.gate_tier} · {drawerData.order.policy_mode}</div></div>
-                  <div style={{background:"var(--ink)", border:"1px solid var(--line)", borderRadius:8, padding:10}}><div className="k" style={{fontFamily:"JetBrains Mono, monospace", fontSize:10, letterSpacing:"0.1em", textTransform:"uppercase", color:"var(--muted)"}}>Amount · Status</div><div style={{fontSize:16}}>{money(drawerData.order.amount_inr)} <span className={`state ${drawerData.order.state}`} style={{marginLeft:6, verticalAlign:"middle"}}>{drawerData.order.state==="CONFIRMED"?"Paid": drawerData.order.state==="PENDING"?"Awaiting payment": drawerData.order.state==="HELD"?"On hold": drawerData.order.state}</span></div><div className="muted" style={{fontSize:11}}>{drawerData.order.razorpay_payment_id ? `Pay ${drawerData.order.razorpay_payment_id.slice(0,12)}…` : drawerData.order.razorpay_order_id ? `Razorpay ${drawerData.order.razorpay_order_id.slice(0,12)}…` : "No gateway yet"}</div></div>
+              <p className="muted" style={{fontSize:12, margin:"0 0 14px"}}>
+                Tap any product row to view its exact PRAMAN pricing bounds, margins, and attach recommendations.
+              </p>
+
+              <div className="orders-wrap">
+                <table className="orders-table" role="table" aria-label="Product Catalog">
+                  <thead>
+                    <tr>
+                      <th>SKU</th>
+                      <th>Product Title</th>
+                      <th>Category</th>
+                      <th>Retail Price</th>
+                      <th>Floor Price</th>
+                      <th>Max Discount</th>
+                      <th>Stock</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {!catalogData && catalogBusy ? (
+                      <tr><td colSpan={8} style={{textAlign:"center", padding:30, color:"var(--muted)"}}>Loading catalog products…</td></tr>
+                    ) : !catalogData?.products?.length ? (
+                      <tr><td colSpan={8} style={{textAlign:"center", padding:30, color:"var(--muted)"}}>No products found matching your search.</td></tr>
+                    ) : (
+                      catalogData.products.map(p => {
+                        const isLow = p.stock_qty <= 10 && p.stock_qty > 0;
+                        const isOut = p.stock_qty <= 0;
+                        return (
+                          <tr
+                            key={p.sku}
+                            style={{cursor:"pointer"}}
+                            onClick={() => setSelectedProduct(p)}
+                          >
+                            <td>
+                              <span className="mono" style={{fontSize:12, color:"var(--brass)"}}>{p.sku}</span>
+                            </td>
+                            <td style={{maxWidth:280}}>
+                              <strong style={{color:"var(--text)"}}>{p.title}</strong>
+                            </td>
+                            <td>
+                              <span style={{
+                                display:"inline-block", padding:"2px 8px", borderRadius:6,
+                                background:"rgba(255,255,255,0.06)", fontSize:11, color:"var(--muted)", textTransform:"capitalize"
+                              }}>
+                                {p.category || "general"}
+                              </span>
+                            </td>
+                            <td>
+                              <strong style={{fontFamily:"JetBrains Mono, monospace"}}>{money(p.list_price_inr)}</strong>
+                            </td>
+                            <td>
+                              <span style={{fontFamily:"JetBrains Mono, monospace", color:"var(--teal)", fontSize:12}}>
+                                {p.floor_price_inr ? money(p.floor_price_inr) : "—"}
+                              </span>
+                            </td>
+                            <td>
+                              <span style={{fontFamily:"JetBrains Mono, monospace", fontSize:12, color:"var(--amber)"}}>
+                                {p.max_discount_pct ? `${p.max_discount_pct}%` : "—"}
+                              </span>
+                            </td>
+                            <td>
+                              <span style={{
+                                display:"inline-flex", alignItems:"center", gap:5, padding:"2px 8px", borderRadius:6, fontSize:11,
+                                background: isOut ? "rgba(224,90,51,0.15)" : isLow ? "rgba(232,184,75,0.15)" : "rgba(46,196,165,0.15)",
+                                color: isOut ? "var(--coral)" : isLow ? "var(--amber)" : "var(--teal)",
+                                fontWeight: 600
+                              }}>
+                                <span style={{
+                                  width:6, height:6, borderRadius:"50%",
+                                  background: isOut ? "var(--coral)" : isLow ? "var(--amber)" : "var(--teal)"
+                                }} />
+                                {isOut ? "Out of stock" : `${p.stock_qty} in stock`}
+                              </span>
+                            </td>
+                            <td>
+                              <span style={{color:"var(--teal)", fontSize:11, fontWeight:600}}>
+                                {p.offerable ? "🟢 Active" : "⚪ Paused"}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="stat-grid">
+              <div className="stat"><div className="k">Revenue today</div><div className="v">{money(m.revenue_inr)}</div><div className="muted" style={{fontSize:11, marginTop:4}}>{m.orders} orders · AOV {money(m.aov_inr)}</div></div>
+              <div className="stat"><div className="k">Pending approvals</div><div className="v" style={{color: hasHolds?"var(--amber)":"var(--teal)"}}>{data.approvals.pending_count}</div><div className="muted" style={{fontSize:11, marginTop:4}}>{hasHolds ? "Needs your action — tap Approve" : "All clear"}</div></div>
+              <div className="stat"><div className="k">Ledger</div><div className="v mono" style={{fontSize:14}}>{data.chain.intact===true? "Verified ✓" : data.chain.intact===false? "Broken" : "Checking..."} </div><div className="muted" style={{fontSize:11, marginTop:4}}>{data.chain.head_seq ?? "—"} events · <a href="/audit/verify" style={{color:"var(--brass)"}}>verify report</a></div></div>
+            </div>
+            {hasHolds ? (
+              <div className="panel" style={{borderColor:"var(--amber)", marginBottom:14}}>
+                <h2>Needs your approval — {data.approvals.pending_count} held</h2>
+                <p className="muted" style={{fontSize:12, margin:"0 0 10px"}}>Over the auto-approve limit. Nothing auto-approves.</p>
+                {data.approvals.queue.map(a=>(
+                  <div className="approval" key={a.approval_id}>
+                    <div style={{display:"flex", justifyContent:"space-between", alignItems:"baseline"}}>
+                      <strong className="num" style={{fontSize:16}}>{money(a.amount_inr)}</strong>
+                      <span className="muted" style={{fontFamily:"JetBrains Mono, monospace", fontSize:11}}>{a.order_id}</span>
+                    </div>
+                    <div className="muted" style={{fontSize:12, margin:"6px 0"}}>{a.note}</div>
+                    <div style={{display:"flex", gap:6, flexWrap:"wrap", marginTop:8}}>
+                      <button className="pill approve" onClick={()=>decide(a.approval_id,"approve")}>Approve</button>
+                      <button className="pill reject" onClick={()=>decide(a.approval_id,"reject")}>Reject</button>
+                      <input id={`cnt-${a.approval_id}`} className="counter-input" placeholder="Counter ₹" />
+                      <button className="pill dark" onClick={()=>doCounter(a.approval_id)}>Send counter</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ): null}
+            <div className="panel">
+              <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6}}>
+                <h2 style={{margin:0}}>Recent orders</h2>
+                <span className="muted" style={{fontFamily:"JetBrains Mono, monospace", fontSize:11}}>{storeId || "default"} · {orders?.count||0} orders</span>
+              </div>
+              <p className="muted" style={{fontSize:12, margin:"0 0 10px"}}>Tap an order to see why it was approved and its audit trail.</p>
+              <div className="orders-wrap">
+              <table className="orders-table" role="table" aria-label="Recent orders">
+                <thead><tr><th>Order</th><th>Product</th><th>Amount</th><th>Status</th><th>Date</th></tr></thead>
+                <tbody>
+                  {orders === null ? (
+                    <tr><td colSpan={5}><div className="skeleton skeleton-text" style={{height:40}} /></td></tr>
+                  ) : (orders?.orders||[]).map(o=>(
+                    <tr key={o.order_id} onClick={()=>openOrder(o.order_id)} onKeyDown={(e)=> e.key==="Enter" && openOrder(o.order_id)} tabIndex={0} role="button" aria-label={`Open order ${o.order_id}`}>
+                      <td className="num" style={{fontSize:12}}>{o.order_id.slice(0,13)}…</td>
+                      <td style={{maxWidth:260, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"}}>{o.title_summary||o.offer_id}</td>
+                      <td className="num" style={{textAlign:"right", fontVariantNumeric:"tabular-nums"}}>{money(o.amount_inr)}</td>
+                      <td><span className={`state ${o.state}`}>{o.state==="CONFIRMED"?"Paid": o.state==="PENDING"?"Awaiting payment": o.state==="HELD"?"On hold": o.state}</span></td>
+                      <td className="muted" style={{fontFamily:"JetBrains Mono, monospace", fontSize:11}}>{fmtDate(o.created_at)}</td>
+                    </tr>
+                  ))}
+                  {orders && !(orders?.orders||[]).length? <tr><td colSpan={5}><div className="empty-state"><p>No orders yet.</p><p className="muted" style={{fontSize:12}}>Share your store link with a buyer agent or test with a Gada product in Shopify.</p></div></td></tr>: null}
+                </tbody>
+              </table>
+              </div>
+              {selectedOrder && drawerData? (
+                <div className="drawer">
+                  <div style={{display:"flex", justifyContent:"space-between", alignItems:"center"}}>
+                    <h3 style={{margin:0}}>Order details — {selectedOrder} <a href={`/audit/${selectedOrder}`} style={{marginLeft:8, fontSize:11, color:"var(--brass)"}}>Open full report →</a></h3>
+                    <button onClick={()=>{setSelectedOrder(null); setDrawerData(null);}} className="pill dark">Close</button>
+                  </div>
+                  {drawerData.order ? (
+                    <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))", gap:10, marginTop:12}}>
+                      <div style={{background:"var(--ink)", border:"1px solid var(--line)", borderRadius:8, padding:10}}><div className="k" style={{fontFamily:"JetBrains Mono, monospace", fontSize:10, letterSpacing:"0.1em", textTransform:"uppercase", color:"var(--muted)"}}>Order</div><div style={{fontSize:13, marginTop:4}}>{drawerData.order.order_id}</div><div className="muted" style={{fontSize:11}}>{fmtDate(drawerData.order.created_at)}</div></div>
+                      <div style={{background:"var(--ink)", border:"1px solid var(--line)", borderRadius:8, padding:10}}><div className="k" style={{fontFamily:"JetBrains Mono, monospace", fontSize:10, letterSpacing:"0.1em", textTransform:"uppercase", color:"var(--muted)"}}>Product</div><div style={{fontSize:13, marginTop:4}}>{orders?.orders?.find(o=>o.order_id===selectedOrder)?.title_summary || drawerData.order.offer_id}</div><div className="muted" style={{fontSize:11}}>Gate T{drawerData.order.gate_tier} · {drawerData.order.policy_mode}</div></div>
+                      <div style={{background:"var(--ink)", border:"1px solid var(--line)", borderRadius:8, padding:10}}><div className="k" style={{fontFamily:"JetBrains Mono, monospace", fontSize:10, letterSpacing:"0.1em", textTransform:"uppercase", color:"var(--muted)"}}>Amount · Status</div><div style={{fontSize:16}}>{money(drawerData.order.amount_inr)} <span className={`state ${drawerData.order.state}`} style={{marginLeft:6, verticalAlign:"middle"}}>{drawerData.order.state==="CONFIRMED"?"Paid": drawerData.order.state==="PENDING"?"Awaiting payment": drawerData.order.state==="HELD"?"On hold": drawerData.order.state}</span></div><div className="muted" style={{fontSize:11}}>{drawerData.order.razorpay_payment_id ? `Pay ${drawerData.order.razorpay_payment_id.slice(0,12)}…` : drawerData.order.razorpay_order_id ? `Razorpay ${drawerData.order.razorpay_order_id.slice(0,12)}…` : "No gateway yet"}</div></div>
+                    </div>
+                  ): null}
+                  <div style={{marginTop:10, fontSize:11, color:"var(--muted)"}}>Why approved: <b style={{color:"var(--text)"}}>{drawerData.order?.amount_inr ? `Amount ${money(drawerData.order.amount_inr)}, gate T${drawerData.order.gate_tier}` : "See trail"}</b> · All steps hash-chained. <a href="/audit/verify" style={{color:"var(--brass)"}}>Verify</a></div>
+                  <div className="timeline-vertical">
+                    {(drawerData.trail||[]).slice(-6).map((e,idx)=>{
+                      const h = humanEvent(e);
+                      const dotCls = h.tone==="good"?"good": h.tone==="bad"?"bad": h.tone==="warn"?"warn":"neutral";
+                      return (
+                        <div key={idx} className="timeline-step">
+                          <div className={`timeline-dot ${dotCls}`}/>
+                          <div className="timeline-step-head">
+                            <div className="timeline-step-title">{h.title}</div>
+                            <div className="timeline-step-meta">{fmtDate(e.ts)}</div>
+                          </div>
+                          <div className="timeline-step-desc">{h.desc}</div>
+                          {e.event==="payment.captured" && e.money_delta_inr? <div className="timeline-step-amount good">+{money(e.money_delta_inr)} captured</div>: null}
+                          {e.event==="payment.intent" && e.money_delta_inr? <div className="timeline-step-amount warn">{money(e.money_delta_inr)} pending</div>: null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <details style={{marginTop:10}}><summary className="muted" style={{cursor:"pointer", fontSize:11}}>Show details</summary>
+                    <div style={{display:"grid", gridTemplateColumns:"repeat(2,1fr)", gap:8, marginTop:8}}>
+                      <div style={{background:"var(--ink)", border:"1px solid var(--line)", borderRadius:8, padding:8}}><div style={{fontSize:10, color:"#8B97A6", letterSpacing:"0.08em", textTransform:"uppercase"}}>Offer</div><div style={{fontSize:11, marginTop:2, wordBreak:"break-all"}}>{drawerData.order?.offer_id || "—"}</div></div>
+                      <div style={{background:"var(--ink)", border:"1px solid var(--line)", borderRadius:8, padding:8}}><div style={{fontSize:10, color:"#8B97A6", letterSpacing:"0.08em", textTransform:"uppercase"}}>Gate</div><div style={{fontSize:11, marginTop:2}}>Tier {drawerData.order?.gate_tier} · {drawerData.order?.policy_mode}</div></div>
+                      <div style={{background:"var(--ink)", border:"1px solid var(--line)", borderRadius:8, padding:8}}><div style={{fontSize:10, color:"#8B97A6", letterSpacing:"0.08em", textTransform:"uppercase"}}>Razorpay order</div><div style={{fontSize:11, marginTop:2, wordBreak:"break-all"}}>{drawerData.order?.razorpay_order_id || "Not created yet"}</div></div>
+                      <div style={{background:"var(--ink)", border:"1px solid var(--line)", borderRadius:8, padding:8}}><div style={{fontSize:10, color:"#8B97A6", letterSpacing:"0.08em", textTransform:"uppercase"}}>Payment</div><div style={{fontSize:11, marginTop:2, wordBreak:"break-all"}}>{drawerData.order?.razorpay_payment_id || "Awaiting payment"}</div></div>
+                    </div>
+                  </details>
                 </div>
               ): null}
-              <div style={{marginTop:10, fontSize:11, color:"var(--muted)"}}>Why approved: <b style={{color:"var(--text)"}}>{drawerData.order?.amount_inr ? `Amount ${money(drawerData.order.amount_inr)}, gate T${drawerData.order.gate_tier}` : "See trail"}</b> · All steps hash-chained. <a href="/audit/verify" style={{color:"var(--brass)"}}>Verify</a></div>
-              <div className="timeline-vertical">
-                {(drawerData.trail||[]).slice(-6).map((e,idx)=>{
-                  const h = humanEvent(e);
-                  const dotCls = h.tone==="good"?"good": h.tone==="bad"?"bad": h.tone==="warn"?"warn":"neutral";
-                  return (
-                    <div key={idx} className="timeline-step">
-                      <div className={`timeline-dot ${dotCls}`}/>
-                      <div className="timeline-step-head">
-                        <div className="timeline-step-title">{h.title}</div>
-                        <div className="timeline-step-meta">{fmtDate(e.ts)}</div>
-                      </div>
-                      <div className="timeline-step-desc">{h.desc}</div>
-                      {e.event==="payment.captured" && e.money_delta_inr? <div className="timeline-step-amount good">+{money(e.money_delta_inr)} captured</div>: null}
-                      {e.event==="payment.intent" && e.money_delta_inr? <div className="timeline-step-amount warn">{money(e.money_delta_inr)} pending</div>: null}
-                    </div>
-                  );
-                })}
-              </div>
-              <details style={{marginTop:10}}><summary className="muted" style={{cursor:"pointer", fontSize:11}}>Show details</summary>
-                <div style={{display:"grid", gridTemplateColumns:"repeat(2,1fr)", gap:8, marginTop:8}}>
-                  <div style={{background:"var(--ink)", border:"1px solid var(--line)", borderRadius:8, padding:8}}><div style={{fontSize:10, color:"#8B97A6", letterSpacing:"0.08em", textTransform:"uppercase"}}>Offer</div><div style={{fontSize:11, marginTop:2, wordBreak:"break-all"}}>{drawerData.order?.offer_id || "—"}</div></div>
-                  <div style={{background:"var(--ink)", border:"1px solid var(--line)", borderRadius:8, padding:8}}><div style={{fontSize:10, color:"#8B97A6", letterSpacing:"0.08em", textTransform:"uppercase"}}>Gate</div><div style={{fontSize:11, marginTop:2}}>Tier {drawerData.order?.gate_tier} · {drawerData.order?.policy_mode}</div></div>
-                  <div style={{background:"var(--ink)", border:"1px solid var(--line)", borderRadius:8, padding:8}}><div style={{fontSize:10, color:"#8B97A6", letterSpacing:"0.08em", textTransform:"uppercase"}}>Razorpay order</div><div style={{fontSize:11, marginTop:2, wordBreak:"break-all"}}>{drawerData.order?.razorpay_order_id || "Not created yet"}</div></div>
-                  <div style={{background:"var(--ink)", border:"1px solid var(--line)", borderRadius:8, padding:8}}><div style={{fontSize:10, color:"#8B97A6", letterSpacing:"0.08em", textTransform:"uppercase"}}>Payment</div><div style={{fontSize:11, marginTop:2, wordBreak:"break-all"}}>{drawerData.order?.razorpay_payment_id || "Awaiting payment"}</div></div>
+            </div>
+            <div style={{textAlign:"center", marginTop:12, display:"flex", gap:8, justifyContent:"center"}}>
+              <button className="pill dark" style={{fontSize:11}} onClick={()=>setShowActivity(!showActivity)}>{showActivity?"Hide settings":"Policy & system activity"}</button>
+              <a href="/audit/verify" className="pill dark" style={{fontSize:11, textDecoration:"none", display:"inline-block", padding:"7px 12px"}}>Verify ledger</a>
+            </div>
+            {showActivity? (
+              <div className="grid" style={{marginTop:12}}>
+                <div className="col-6 panel">
+                  <h2>Recent activity — what happened</h2>
+                  <ul className="feed" style={{maxHeight:260}}>
+                    {(data.feed||[]).slice(0,8).map(e=>{
+                      const h = humanEvent(e);
+                      return (
+                      <li key={e.seq} style={{display:"flex", gap:8, padding:"6px 0", borderBottom:"1px dashed rgba(255,255,255,0.06)"}}>
+                        <span className="muted" style={{fontFamily:"JetBrains Mono, monospace", fontSize:10, minWidth:54}}>{fmtDate(e.ts)}</span>
+                        <span style={{fontSize:12, flex:1, color: h.tone==="good"?"var(--teal)": h.tone==="bad"?"var(--coral)": h.tone==="warn"?"var(--amber)":"var(--text)"}}>{h.title}</span>
+                      </li>
+                      );
+                    })}
+                    {!(data.feed||[]).length? <li className="muted" style={{fontSize:12}}>No activity yet</li>: null}
+                  </ul>
                 </div>
-              </details>
-            </div>
-          ): null}
-        </div>
-        <div style={{textAlign:"center", marginTop:12, display:"flex", gap:8, justifyContent:"center"}}>
-          <button className="pill dark" style={{fontSize:11}} onClick={()=>setShowActivity(!showActivity)}>{showActivity?"Hide settings":"Policy & system activity"}</button>
-          <a href="/audit/verify" className="pill dark" style={{fontSize:11, textDecoration:"none", display:"inline-block", padding:"7px 12px"}}>Verify ledger</a>
-        </div>
-        {showActivity? (
-          <div className="grid" style={{marginTop:12}}>
-            <div className="col-6 panel">
-              <h2>Recent activity — what happened</h2>
-              <ul className="feed" style={{maxHeight:260}}>
-                {(data.feed||[]).slice(0,8).map(e=>{
-                  const h = humanEvent(e);
-                  return (
-                  <li key={e.seq} style={{display:"flex", gap:8, padding:"6px 0", borderBottom:"1px dashed rgba(255,255,255,0.06)"}}>
-                    <span className="muted" style={{fontFamily:"JetBrains Mono, monospace", fontSize:10, minWidth:54}}>{fmtDate(e.ts)}</span>
-                    <span style={{fontSize:12, flex:1, color: h.tone==="good"?"var(--teal)": h.tone==="bad"?"var(--coral)": h.tone==="warn"?"var(--amber)":"var(--text)"}}>{h.title}</span>
-                  </li>
-                  );
-                })}
-                {!(data.feed||[]).length? <li className="muted" style={{fontSize:12}}>No activity yet</li>: null}
-              </ul>
-            </div>
-            <div className="col-6 panel">
-              <h2>Policy — you can change these</h2>
-              {!policyDraft? <div className="muted">Loading…</div> : (
-                <>
-                  <div className="field"><label>Max discount per item (%)</label><input type="number" value={policyDraft.item_discount_cap} onChange={e=>setPolicyDraft({...policyDraft, item_discount_cap: parseInt(e.target.value||"0",10)})} /></div>
-                  <div className="field"><label>Max cart discount (%)</label><input type="number" value={policyDraft.cart_discount_cap} onChange={e=>setPolicyDraft({...policyDraft, cart_discount_cap: parseInt(e.target.value||"0",10)})} /></div>
-                  <div className="field"><label>Daily discount budget (₹)</label><input type="number" value={policyDraft.daily_budget} onChange={e=>setPolicyDraft({...policyDraft, daily_budget: parseInt(e.target.value||"0",10)})} /></div>
-                  <div className="field"><label>Auto-approve up to (₹)</label><input type="number" value={policyDraft.approval_limit} onChange={e=>setPolicyDraft({...policyDraft, approval_limit: parseInt(e.target.value||"0",10)})} /></div>
-                  <button className="pill approve" style={{marginTop:8, background:"var(--brass)", color:"#1A1400", borderColor:"var(--brass)"}} onClick={handlePolicySave}>Save policy</button>
-                  <p className="muted" style={{fontSize:11, marginTop:6}}>Saved per store, audited as <code>policy.updated</code> in ledger.</p>
-                </>
-              )}
+                <div className="col-6 panel">
+                  <h2>Policy — you can change these</h2>
+                  {!policyDraft? <div className="muted">Loading…</div> : (
+                    <>
+                      <div className="field"><label>Max discount per item (%)</label><input type="number" value={policyDraft.item_discount_cap} onChange={e=>setPolicyDraft({...policyDraft, item_discount_cap: parseInt(e.target.value||"0",10)})} /></div>
+                      <div className="field"><label>Max cart discount (%)</label><input type="number" value={policyDraft.cart_discount_cap} onChange={e=>setPolicyDraft({...policyDraft, cart_discount_cap: parseInt(e.target.value||"0",10)})} /></div>
+                      <div className="field"><label>Daily discount budget (₹)</label><input type="number" value={policyDraft.daily_budget} onChange={e=>setPolicyDraft({...policyDraft, daily_budget: parseInt(e.target.value||"0",10)})} /></div>
+                      <div className="field"><label>Auto-approve up to (₹)</label><input type="number" value={policyDraft.approval_limit} onChange={e=>setPolicyDraft({...policyDraft, approval_limit: parseInt(e.target.value||"0",10)})} /></div>
+                      <button className="pill approve" style={{marginTop:8, background:"var(--brass)", color:"#1A1400", borderColor:"var(--brass)"}} onClick={handlePolicySave}>Save policy</button>
+                      <p className="muted" style={{fontSize:11, marginTop:6}}>Saved per store, audited as <code>policy.updated</code> in ledger.</p>
+                    </>
+                  )}
+                </div>
+              </div>
+            ): null}
+          </>
+        )}
+        {selectedProduct ? (
+          <div className="modal-backdrop" onClick={() => setSelectedProduct(null)}>
+            <div className="modal" style={{maxWidth:560, width:"92vw"}} onClick={e => e.stopPropagation()}>
+              <div style={{display:"flex", justifyContent:"space-between", alignItems:"flex-start", borderBottom:"1px solid var(--line)", paddingBottom:12}}>
+                <div>
+                  <span className="mono" style={{fontSize:12, color:"var(--brass)"}}>{selectedProduct.sku}</span>
+                  <h3 style={{margin:"4px 0 0", fontSize:18, color:"var(--text)"}}>{selectedProduct.title}</h3>
+                </div>
+                <button className="pill dark" style={{padding:"4px 10px"}} onClick={() => setSelectedProduct(null)}>✕</button>
+              </div>
+
+              <div style={{display:"grid", gridTemplateColumns:"repeat(2, 1fr)", gap:10, marginTop:16}}>
+                <div className="info-card">
+                  <div className="info-card-label">Retail List Price</div>
+                  <div className="info-card-value mono" style={{fontSize:18, fontWeight:700}}>{money(selectedProduct.list_price_inr)}</div>
+                  <div className="info-card-sub">Store selling price</div>
+                </div>
+                <div className="info-card">
+                  <div className="info-card-label">PRAMAN Floor Price</div>
+                  <div className="info-card-value mono" style={{fontSize:18, fontWeight:700, color:"var(--teal)"}}>
+                    {selectedProduct.floor_price_inr ? money(selectedProduct.floor_price_inr) : "—"}
+                  </div>
+                  <div className="info-card-sub">Bound 3: Autonomous AI floor</div>
+                </div>
+                <div className="info-card">
+                  <div className="info-card-label">Max Discount Cap</div>
+                  <div className="info-card-value mono" style={{fontSize:18, fontWeight:700, color:"var(--amber)"}}>
+                    {selectedProduct.max_discount_pct ? `${selectedProduct.max_discount_pct}%` : "—"}
+                  </div>
+                  <div className="info-card-sub">Bound 1: Max discount per SKU</div>
+                </div>
+                <div className="info-card">
+                  <div className="info-card-label">Inventory On Hand</div>
+                  <div className="info-card-value mono" style={{fontSize:18, fontWeight:700}}>
+                    {selectedProduct.stock_qty} units
+                  </div>
+                  <div className="info-card-sub">Category: {selectedProduct.category || "general"}</div>
+                </div>
+              </div>
+
+              {selectedProduct.attach_candidates?.length ? (
+                <div style={{marginTop:16}}>
+                  <div className="info-card-label" style={{marginBottom:6}}>Recommended Attach Products (Upsell Candidates)</div>
+                  <div style={{display:"flex", gap:6, flexWrap:"wrap"}}>
+                    {selectedProduct.attach_candidates.map(att => (
+                      <span key={att} className="pill dark" style={{fontSize:11, fontFamily:"JetBrains Mono, monospace"}}>{att}</span>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              <div style={{display:"flex", justifyContent:"flex-end", marginTop:20}}>
+                <button className="pill approve" onClick={() => setSelectedProduct(null)}>Close</button>
+              </div>
             </div>
           </div>
-        ): null}
+        ) : null}
         {toast? <div className="toast">{toast}</div>: null}
         {error? <div className="toast" style={{borderColor:"var(--coral)", color:"var(--coral)"}}>{error}</div>: null}
       </main>
