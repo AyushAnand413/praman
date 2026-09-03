@@ -109,12 +109,12 @@ class ApprovalOutcome:
         return body
 
 
-def pending_queue() -> list[dict[str, Any]]:
+def pending_queue(conn=None) -> list[dict[str, Any]]:
     """The merchant's decision queue, with each order and its receipt attached."""
     queue: list[dict[str, Any]] = []
-    for approval in approvals_store.pending():
-        order = orders.get(approval["order_id"])
-        offer = offers.get(approval["offer_id"])
+    for approval in approvals_store.pending(conn=conn):
+        order = orders.get(approval["order_id"], conn=conn)
+        offer = offers.get(approval["offer_id"], conn=conn)
         queue.append(
             {
                 **approval,

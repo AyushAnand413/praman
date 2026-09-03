@@ -216,7 +216,7 @@ def transition(
     conn = conn or get_connection()
     with transaction(conn):
         row = conn.execute(
-            "SELECT state FROM orders WHERE order_id = ?", (order_id,)
+            "SELECT state FROM orders WHERE order_id = ? FOR UPDATE", (order_id,)
         ).fetchone()
         if row is None:
             raise OrderNotFound(f"no order {order_id!r}")
@@ -257,7 +257,7 @@ def advance(
     conn = conn or get_connection()
     with transaction(conn):
         row = conn.execute(
-            "SELECT state FROM orders WHERE order_id = ?", (order_id,)
+            "SELECT state FROM orders WHERE order_id = ? FOR UPDATE", (order_id,)
         ).fetchone()
         if row is None:
             raise OrderNotFound(f"no order {order_id!r}")

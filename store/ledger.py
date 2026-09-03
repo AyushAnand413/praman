@@ -316,8 +316,12 @@ def verify_chain(conn=None, limit: int | None = None) -> dict[str, Any]:
     else:
         rows = conn.execute("SELECT * FROM ledger ORDER BY seq ASC").fetchall()
 
-    expected_prev = LEDGER_GENESIS_PREV_HASH
-    expected_seq = 1
+    if limit is not None and rows:
+        expected_prev = str(rows[0]["prev_hash"])
+        expected_seq = int(rows[0]["seq"])
+    else:
+        expected_prev = LEDGER_GENESIS_PREV_HASH
+        expected_seq = 1
     checked = 0
 
     for row in rows:

@@ -161,7 +161,7 @@ def decide(
     conn = conn or get_connection()
     with transaction(conn):
         row = conn.execute(
-            "SELECT state FROM approvals WHERE approval_id = ?", (approval_id,)
+            "SELECT state FROM approvals WHERE approval_id = ? FOR UPDATE", (approval_id,)
         ).fetchone()
         if row is None:
             raise ApprovalNotFound(f"no approval {approval_id!r}")
@@ -170,12 +170,12 @@ def decide(
                 f"approval {approval_id} is already {row['state']}; a decision "
                 "cannot be revised, only superseded by a new request"
             )
-        conn.execute(
+        res = conn.execute(
             """UPDATE approvals
                   SET state = ?, counter_amount_inr = ?,
                       counter_offer_id = COALESCE(?, counter_offer_id),
                       note = COALESCE(?, note), decided_at = ?, decided_by = ?
-                WHERE approval_id = ?""",
+                WHERE approval_id = ? AND state = ?""",
             (
                 state,
                 None if counter_amount_inr is None else int(counter_amount_inr),
@@ -184,6 +184,16 @@ def decide(
                 now_ts(),
                 decided_by,
                 approval_id,
+                PENDING,
             ),
         )
+        if getattr(res, "rowcount", 1) == 0:
+            current = conn.execute(
+                "SELECT state FROM approvals WHERE approval_id = ?", (approval_id,)
+            ).fetchone()
+            st = current["state"] if current else "UNKNOWN"
+            raise AlreadyDecided(
+                f"approval {approval_id} is already {st}; a decision "
+                "cannot be revised, only superseded by a new request"
+            )
     return require(approval_id, conn=conn)
