@@ -139,7 +139,7 @@ class GeminiClient:
                 timeout=int(self.timeout_seconds * 1000)
             ),
         }
-        if self.thinking_budget >= 0:
+        if self.thinking_budget and self.thinking_budget > 0:
             kwargs["thinking_config"] = types.ThinkingConfig(
                 thinking_budget=self.thinking_budget
             )

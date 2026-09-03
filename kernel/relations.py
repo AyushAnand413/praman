@@ -41,9 +41,23 @@ def declared_companions(base_sku: str) -> frozenset[str]:
             declared.add(str(sku))
     tier_up = private.get("tier_up_sku")
     if tier_up:
-        # A tier upgrade is inherently related: it is the same product, more
-        # of it. Bound 1 still guards its price like any other line.
         declared.add(str(tier_up))
+    if not declared:
+        base_pub = catalog.cache.public(base_sku)
+        if base_pub:
+            cat = (base_pub.get("category") or "").lower()
+            COMPLEMENT_CATS = {
+                "laptop": {"cable", "cables", "charger", "case", "power-bank", "speaker", "audio_accessories"},
+                "mobile-phone": {"cable", "cables", "charger", "charging-pad", "charging_accessories", "case", "earbuds", "earbud_accessories", "power-bank"},
+                "television": {"cable", "cables", "speaker", "extension-board"},
+                "headphones": {"cable", "cables", "case", "audio_accessories"},
+                "earbuds": {"ear-tips", "earbud_accessories", "case", "cable"},
+            }
+            target_cats = COMPLEMENT_CATS.get(cat)
+            if target_cats:
+                for p in catalog.cache.all_public():
+                    if (p.get("category") or "").lower() in target_cats and p["sku"] != base_sku:
+                        declared.add(p["sku"])
     return frozenset(declared)
 
 

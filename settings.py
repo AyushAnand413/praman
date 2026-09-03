@@ -420,7 +420,7 @@ CLUSTER_PRIOR_MIN_OWN_SAMPLES = 5
 # The model that writes the sales pitch. A name, not a credential — it belongs
 # here rather than beside GEMINI_API_KEY so it can be logged and put in a ledger
 # entry, which is how a later audit tells which model produced an offer.
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
 
 # Wall-clock ceiling on one model call. Deliberately below the offer latency
 # budget above, because the offer path may make two calls (the original and the
