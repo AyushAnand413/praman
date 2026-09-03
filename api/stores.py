@@ -112,26 +112,62 @@ def _update_sync_job(job_id: str, status: str, imported: int = 0, skipped: int =
 
 
 def _do_shopify_sync(job_id: str, store_id: str, domain: str, token: str):
+    """Sync Shopify catalog page-by-page, committing each page to DB immediately.
+
+    This way, even if Vercel kills the container mid-sync (30s limit on Hobby),
+    all products fetched so far are already saved. The job row tracks progress.
+    Large stores (100+ products) may need a second "Sync again" to get remaining pages.
+    """
     _update_sync_job(job_id, "running")
+    total_imported = 0
+    total_skipped = 0
     try:
         base_url = f"https://{domain}/admin/api/2024-10"
         client = shopify_integration.ShopifyClient(access_token=token, base_url=base_url)
-        result = shopify_integration.sync_catalog(client)
-        _update_sync_job(job_id, "done", imported=result["imported"], skipped=result["skipped"])
+
+        # Stream sync page by page — each page is committed so partial progress is never lost
+        since_id = None
+        while True:
+            page = client.fetch_products_page(since_id=since_id)
+            if not page:
+                break
+            public_rows, private_rows, skipped = [], [], []
+            for product in page:
+                try:
+                    pub, priv = shopify_integration.map_product(product)
+                    public_rows.append(pub)
+                    private_rows.append(priv)
+                    since_id = max(since_id or 0, int(product.get("id") or 0))
+                except Exception:
+                    skipped.append(str(product.get("title") or product.get("id")))
+            if public_rows:
+                from store import catalog as _cat
+                _cat.seed_database_from_rows(public_rows, private_rows)
+            total_imported += len(public_rows)
+            total_skipped += len(skipped)
+            # Update job row after each page so UI shows live progress
+            _update_sync_job(job_id, "running", imported=total_imported, skipped=total_skipped)
+            if len(page) < settings.SHOPIFY_SYNC_PAGE_LIMIT:
+                break
+
+        _update_sync_job(job_id, "done", imported=total_imported, skipped=total_skipped)
         ledger.append(
             "merchant",
             "catalog.synced",
-            {"sync_id": job_id, "source": "shopify", "store_id": store_id, "domain": domain, "imported": result["imported"], "skipped": result["skipped"]},
-            reason=f"Shopify catalog sync for {store_id}: {result['imported']} imported",
+            {"sync_id": job_id, "source": "shopify", "store_id": store_id, "domain": domain,
+             "imported": total_imported, "skipped": total_skipped},
+            reason=f"Shopify catalog sync for {store_id}: {total_imported} imported",
         )
     except Exception as exc:
-        _update_sync_job(job_id, "failed", error=str(exc)[:500])
+        _update_sync_job(job_id, "failed", imported=total_imported, skipped=total_skipped, error=str(exc)[:500])
         ledger.append(
             "merchant",
             "catalog.synced",
-            {"sync_id": job_id, "source": "shopify", "store_id": store_id, "domain": domain, "imported": 0, "error": str(exc)[:200]},
-            reason=f"Shopify sync failed for {store_id}: {exc}",
+            {"sync_id": job_id, "source": "shopify", "store_id": store_id, "domain": domain,
+             "imported": total_imported, "error": str(exc)[:200]},
+            reason=f"Shopify sync failed for {store_id} after {total_imported} imported: {exc}",
         )
+
 
 
 @router.get("/stores", summary="List configured stores")
