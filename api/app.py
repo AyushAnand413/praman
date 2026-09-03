@@ -149,13 +149,20 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # Dashboard origin only. Agent clients are server-side and do not need
-    # CORS; a wildcard here would exist purely to be abused.
+    # Dashboard origin + preview. Agent clients are server-side and do not need
+    # CORS; a wildcard would be abused. Also allow Vercel preview suffix.
+    origins = [o for o in [DASHBOARD_ORIGIN, "https://praman-seven.vercel.app"] if o]
+    # allow preview deployments too (praman-xxx.vercel.app)
+    if DASHBOARD_ORIGIN and "vercel.app" not in DASHBOARD_ORIGIN:
+        origins.append("https://praman-seven.vercel.app")
+    origins = list(dict.fromkeys(origins))  # dedupe
+    # also allow any praman preview via regex — CORSMiddleware doesn't support regex, so we allow all vercel preview via setting allow_origin_regex
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[DASHBOARD_ORIGIN],
+        allow_origins=origins,
+        allow_origin_regex=r"https://praman.*\.vercel\.app",
         allow_credentials=False,
-        allow_methods=["GET", "POST", "PUT"],
+        allow_methods=["GET", "POST", "PUT", "OPTIONS"],
         allow_headers=[
             "Content-Type",
             "Authorization",
