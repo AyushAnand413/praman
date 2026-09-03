@@ -116,6 +116,7 @@ CREATE TABLE IF NOT EXISTS orders (
     updated_at          TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_orders_state ON orders (state);
+CREATE INDEX IF NOT EXISTS idx_orders_created_at ON orders (created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_rzp_order
     ON orders (razorpay_order_id) WHERE razorpay_order_id IS NOT NULL;
 
