@@ -129,8 +129,13 @@ def check_and_accrue(
     conn = conn or get_connection()
     key = day or utc_day()
     with transaction(conn):
+        # Ensure row exists so FOR UPDATE row lock serializes concurrent budget accruals
+        conn.execute(
+            "INSERT INTO policy_budgets (day, discount_spent_inr, updated_at) VALUES (?, 0, ?) ON CONFLICT (day) DO NOTHING",
+            (key, now_ts()),
+        )
         row = conn.execute(
-            "SELECT discount_spent_inr FROM policy_budgets WHERE day = ?", (key,)
+            "SELECT discount_spent_inr FROM policy_budgets WHERE day = ? FOR UPDATE", (key,)
         ).fetchone()
         already = int(row["discount_spent_inr"]) if row else 0
         if already + discount_inr > DAILY_DISCOUNT_BUDGET_INR:

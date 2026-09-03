@@ -127,7 +127,14 @@ def _insert_hold(
     if qty < 1:
         raise ValueError(f"a hold must be for at least 1 unit; got {qty}")
 
-    available = on_hand(sku, conn=conn) - held_qty(sku, now=moment, conn=conn)
+    # Row-level lock on products to serialize concurrent reservations for the same SKU
+    row = conn.execute(
+        "SELECT stock_qty FROM products WHERE sku = ? FOR UPDATE", (sku,)
+    ).fetchone()
+    if row is None:
+        raise InsufficientStock(sku, qty, 0)
+    stock_on_hand = int(row["stock_qty"])
+    available = stock_on_hand - held_qty(sku, now=moment, conn=conn)
     if qty > available:
         raise InsufficientStock(sku, qty, max(0, available))
 

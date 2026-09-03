@@ -17,8 +17,10 @@ from store.db import get_connection, transaction
 from store.tenancy import configured_stores, current_store, set_current, resolve
 from store.timestamps import utc_now, to_ts
 import settings
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 
 router = APIRouter(prefix="/merchant/v1", tags=["merchant"])
+_sync_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="shopify_sync")
 
 
 class ShopifyConnect(BaseModel):
@@ -238,12 +240,10 @@ async def connect_shopify(
     # safer than asyncio.ensure_future which is fire-and-forget and gets killed
     # when the response is sent on Hobby Vercel (~10s container lifetime).
     import asyncio
-    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
     loop = asyncio.get_running_loop()
-    executor = ThreadPoolExecutor(max_workers=1)
     try:
         await asyncio.wait_for(
-            loop.run_in_executor(executor, _do_shopify_sync, job_id, sid, body.domain, body.token),
+            loop.run_in_executor(_sync_executor, _do_shopify_sync, job_id, sid, body.domain, body.token),
             timeout=25.0,  # Supabase + Shopify API — 25s is safe; Vercel allows 30s on Pro, 10s Hobby
         )
     except (asyncio.TimeoutError, FutureTimeout):

@@ -429,23 +429,33 @@ def connect(path: Path | str | None = None):  # path ignored - Postgres only
             keepalives_idle=30,
             keepalives_interval=10,
             keepalives_count=3,
-            connect_timeout=5,
+            connect_timeout=10,
             options="-c statement_timeout=10000",
         )
-        raw.autocommit = False
+        raw.autocommit = True
         return _PGWrapper(raw)
     except Exception as exc:
         raise RuntimeError(f"DATABASE_URL set but psycopg2 connect failed: {exc}") from exc
 
 
 def get_connection():
-    """Thread-local connection to Postgres, auto-reconnects if closed or in error state."""
+    """Thread-local connection to Postgres, auto-reconnects if closed, dropped, or in error state."""
+    import time as _time
+    import psycopg2.extensions as ext
+
     conn = getattr(_local, "conn", None)
     if conn is not None:
         try:
             pg = conn._pg
-            # closed=0 means open; status=2 means InFailedSqlTransaction — both need reconnect
-            if getattr(pg, "closed", 1) == 0 and getattr(pg, "status", 0) != 2:
+            # closed=0 means open; status=3 (TRANSACTION_STATUS_INERROR) means InFailedSqlTransaction
+            if getattr(pg, "closed", 1) == 0 and getattr(pg, "status", 0) != ext.TRANSACTION_STATUS_INERROR:
+                now = _time.monotonic()
+                # If idle for > 5s, verify socket to detect remote pooler drops (e.g. Supabase 300s timeout)
+                if now - getattr(_local, "last_used", 0) > 5.0:
+                    cur = pg.cursor()
+                    cur.execute("SELECT 1")
+                    cur.close()
+                _local.last_used = now
                 return conn
         except Exception:
             pass
@@ -459,6 +469,7 @@ def get_connection():
             pass
         _local.conn = None
     conn = _local.conn = connect()
+    _local.last_used = _time.monotonic()
     return conn
 
 
@@ -471,12 +482,16 @@ def reset_connection() -> None:
         except Exception:
             pass
     _local.conn = None
+    _local.last_used = 0
 
 
 @contextmanager
 def transaction(conn=None) -> Iterator:
-    """Postgres transaction - no explicit BEGIN (psycopg2 manages it)."""
+    """Postgres transaction - manages autocommit state for ACID atomicity."""
     conn = conn or get_connection()
+    was_autocommit = getattr(conn._pg, "autocommit", True)
+    if was_autocommit:
+        conn._pg.autocommit = False
     try:
         yield conn
     except BaseException:
@@ -485,14 +500,21 @@ def transaction(conn=None) -> Iterator:
         except Exception:
             pass
         raise
-    try:
-        conn._pg.commit()
-    except Exception:
+    else:
         try:
-            conn._pg.rollback()
+            conn._pg.commit()
         except Exception:
-            pass
-        raise
+            try:
+                conn._pg.rollback()
+            except Exception:
+                pass
+            raise
+    finally:
+        if was_autocommit:
+            try:
+                conn._pg.autocommit = True
+            except Exception:
+                pass
     return
 
 

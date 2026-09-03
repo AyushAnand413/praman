@@ -49,14 +49,14 @@ MAX_FEED_LENGTH = 200
 
 
 def _feed(
-    limit: int = FEED_LENGTH, before_seq: int | None = None
+    limit: int = FEED_LENGTH, before_seq: int | None = None, conn=None
 ) -> tuple[list[dict[str, Any]], bool]:
     """One page of the ledger tail, oldest-first within the page.
 
     Returns the page and whether older entries exist behind it. One extra row is
     read and dropped to answer that without a second COUNT over the chain.
     """
-    entries = ledger.recent(limit=limit + 1, before_seq=before_seq)
+    entries = ledger.recent(limit=limit + 1, before_seq=before_seq, conn=conn)
     has_more = len(entries) > limit
     page = [
         events.annotate(
@@ -66,7 +66,7 @@ def _feed(
                 "actor": entry.actor,
                 "event": entry.event,
                 "money_delta_inr": entry.money_delta_inr,
-                "reason": entry.reason[:160],
+                "reason": (entry.reason or "")[:160],
                 "policy_mode": entry.policy_mode,
             }
         )
@@ -346,8 +346,8 @@ def dashboard(
         verification = {"intact": True, "head_seq": head_seq, "head_hash": head_hash, "broken_at": None}
     except Exception:
         verification = {"intact": None, "head_seq": None, "broken_at": None}
-    feed, feed_has_more = _feed(limit=feed_limit, before_seq=feed_before_seq)
-    pending_q = approvals_kernel.pending_queue()
+    feed, feed_has_more = _feed(limit=feed_limit, before_seq=feed_before_seq, conn=conn)
+    pending_q = approvals_kernel.pending_queue(conn=conn)
 
     # Panel cache — DB-backed so it survives Vercel cold starts.
     # Stored as a JSON blob with a timestamp. TTL = 60s.
@@ -414,7 +414,7 @@ def dashboard(
         _panel_cache["safety"] = safety
         _panel_cache["bounds"] = bounds
 
-    return {
+    resp = {
         "mode": {
             "value": settings.POLICY_MODE.value,
             "banner": (
@@ -454,3 +454,8 @@ def dashboard(
             ),
         },
     }
+    try:
+        conn.commit()
+    except Exception:
+        pass
+    return resp

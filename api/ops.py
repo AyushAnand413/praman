@@ -24,8 +24,9 @@ router = APIRouter(prefix="/merchant/v1", tags=["merchant"])
 @router.post("/shopify/sync", summary="Pull the connected Shopify catalog")
 def shopify_sync(
     merchant_key: str | None = Header(default=None, alias="X-Merchant-Key"),
+    authorization: str | None = Header(default=None, alias="Authorization"),
 ) -> dict[str, Any]:
-    _require_merchant(merchant_key)
+    _require_merchant(merchant_key, authorization)
 
     try:
         client = shopify_integration.ShopifyClient()
