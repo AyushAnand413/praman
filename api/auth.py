@@ -48,6 +48,21 @@ def signin(body: Signin):
     return {"access_token": token, "store_id": row["store_id"], "email": row["email"], "merchant_id": row["merchant_id"]}
 
 
+@router.post("/signout", summary="Invalidate current token")
+def signout(authorization: str | None = Header(default=None, alias="Authorization")):
+    if not authorization or not authorization.startswith("Bearer "):
+        return {"status": "ok", "message": "no token to invalidate"}
+    token = authorization.removeprefix("Bearer ").strip()
+    try:
+        from store.db import get_connection, transaction
+        conn = get_connection()
+        with transaction(conn):
+            conn.execute("UPDATE merchants SET active_token=NULL WHERE active_token=?", (token,))
+    except Exception:
+        pass
+    return {"status": "ok"}
+
+
 @router.get("/me", summary="Who am I")
 def me(authorization: str | None = Header(default=None, alias="Authorization")):
     if not authorization or not authorization.startswith("Bearer "):

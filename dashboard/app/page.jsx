@@ -111,19 +111,19 @@ export default function Page(){
     let cancelled=false;
     let timeout;
     async function poll(){
-      if(cancelled || document.hidden) { timeout=setTimeout(poll, 6000); return; }
+      if(cancelled || document.hidden) { timeout=setTimeout(poll, 20000); return; }
       await load();
-      if(!cancelled) timeout=setTimeout(poll, 6000);
+      if(!cancelled) timeout=setTimeout(poll, 20000);
     }
     load();
-    timeout=setTimeout(poll, 6000);
+    timeout=setTimeout(poll, 20000);
     const onVisible=()=>{ if(!document.hidden) load(); };
     document.addEventListener("visibilitychange", onVisible);
     return()=>{ cancelled=true; clearTimeout(timeout); document.removeEventListener("visibilitychange",onVisible); inflight.current?.abort(); };
   },[token,storeId,load]);
   useEffect(()=>{
     if(token && !data){
-      const t=setTimeout(()=>setRestoreTimeout(true), 8000);
+      const t=setTimeout(()=>setRestoreTimeout(true), 12000);
       return ()=>clearTimeout(t);
     } else setRestoreTimeout(false);
   },[token,data]);
@@ -162,7 +162,25 @@ export default function Page(){
       if(connectKind==="shopify") r=await fetch(`${API}/merchant/v1/stores/connect/shopify`,{method:"POST", headers:{...headers(),"Content-Type":"application/json"}, body:JSON.stringify({domain:connectForm.domain, token:connectForm.token})});
       else if(connectKind==="woocommerce") r=await fetch(`${API}/merchant/v1/stores/connect/woocommerce`,{method:"POST", headers:{...headers(),"Content-Type":"application/json"}, body:JSON.stringify({url:connectForm.url, key:connectForm.key, secret:connectForm.secret})});
       else { const rows=connectForm.csv.split("\n").filter(Boolean).slice(0,5).map((line,idx)=>{ const [sku,title,price,stock]=line.split(","); return {sku:sku||`CSV-${idx}`, title:title||sku||`Item ${idx}`, list_price_inr:parseInt(price||"999",10), stock_qty:parseInt(stock||"10",10), category:"audio_accessories"}; }); r=await fetch(`${API}/merchant/v1/stores/connect/custom`,{method:"POST", headers:{...headers(),"Content-Type":"application/json"}, body:JSON.stringify({rows})}); }
-      const j=await r.json().catch(()=>({})); if(!r.ok) throw new Error(j.detail?.message||j.message||`HTTP ${r.status}`); setToast(`Imported ${j.imported||0} products`); setTimeout(()=>setToast(""),3000); setConnectOpen(false); load();
+      const j=await r.json().catch(()=>({})); if(!r.ok) throw new Error(j.detail?.message||j.message||`HTTP ${r.status}`);
+      // Shopify now returns 202 with job_id (async) — poll job, else sync result
+      if(j.job_id){
+        setToast(`Sync started — polling ${j.job_id.slice(0,8)}...`);
+        setConnectOpen(false);
+        // poll job for up to 60s
+        for(let i=0;i<12;i++){
+          await new Promise(res=>setTimeout(res, 5000));
+          try{
+            const pr = await fetch(`${API}/merchant/v1/stores/sync/${j.job_id}`, {headers: headers()});
+            const pj = await pr.json().catch(()=>({}));
+            if(pj.status==="done"){ setToast(`Imported ${pj.imported||0} products`); break; }
+            if(pj.status==="failed"){ throw new Error(pj.error||"sync failed"); }
+          }catch(e){ if(i===11) throw e; }
+        }
+        load();
+      } else {
+        setToast(`Imported ${j.imported||0} products`); setTimeout(()=>setToast(""),3000); setConnectOpen(false); load();
+      }
     }catch(e){ setError(e.message); }
   }
   if(!authReady){
@@ -187,7 +205,7 @@ export default function Page(){
     if(token){
       return <main className="wrap"><div style={{maxWidth:460, margin:"80px auto", textAlign:"center", color:"var(--muted)"}}>
         <div>Restoring session…</div>
-        {restoreTimeout ? <div style={{marginTop:14, fontSize:12, color:"var(--coral)"}}>Taking too long — Neon may be waking (5 sec). <button className="pill dark" style={{marginLeft:8}} onClick={()=>{ setRestoreTimeout(false); load(); }}>Retry</button> <button className="pill dark" style={{marginLeft:6}} onClick={()=>{ try{sessionStorage.clear()}catch{}; setToken(""); setData(null); }}>Sign in again</button></div> : <div style={{marginTop:8, fontSize:11, color:"var(--muted)", opacity:0.7}}>First load after idle takes 3-5 sec</div>}
+        {restoreTimeout ? <div style={{marginTop:14, fontSize:12, color:"var(--coral)"}}>Taking too long — database may be waking (12 sec). <button className="pill dark" style={{marginLeft:8}} onClick={()=>{ setRestoreTimeout(false); load(); }}>Retry</button> <button className="pill dark" style={{marginLeft:6}} onClick={()=>{ try{sessionStorage.clear()}catch{}; setToken(""); setData(null); }}>Sign in again</button></div> : <div style={{marginTop:8, fontSize:11, color:"var(--muted)", opacity:0.7}}>First load after idle takes 3-5 sec</div>}
         {error ? <div className="error" style={{marginTop:12}}>{error}</div> : null}
       </div></main>;
     }
@@ -224,7 +242,7 @@ export default function Page(){
           <select value={storeId} onChange={e=> setStoreId(e.target.value)}>{stores.map(s=><option key={s} value={s}>{s}</option>)}</select>
           <button onClick={()=>setConnectOpen(true)}>Connect store</button>
           <button onClick={()=>setShowActivity(!showActivity)}>{showActivity?"Hide settings":"Settings"}</button>
-          <button onClick={()=>{ try{sessionStorage.clear()}catch{}; setData(null); setToken(""); }}>Sign out</button>
+          <button onClick={async()=>{ try{ await fetch(`${API}/auth/signout`, {method:"POST", headers: {...headers()}});}catch{}; try{sessionStorage.clear()}catch{}; setData(null); setToken(""); }}>Sign out</button>
         </div>
       </nav>
       <main className="wrap">

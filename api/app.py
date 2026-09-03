@@ -211,8 +211,15 @@ def create_app() -> FastAPI:
     def health() -> dict[str, Any]:
         # Health must never wait for a sleeping DB — Vercel kills the function
         # at 10s and the caller sees 504. Return degraded instead of hanging.
+        # Use a short statement timeout so health never blocks 15s on Supabase pooler.
         try:
-            head = ledger.tip()[0]
+            from store.db import get_connection
+            conn = get_connection()
+            try:
+                conn.execute("SET LOCAL statement_timeout = '2000'")
+            except Exception:
+                pass
+            head = ledger.tip(conn)[0]
             db = "ok"
         except Exception as exc:
             head = None

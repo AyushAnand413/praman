@@ -40,6 +40,8 @@ TABLES: tuple[str, ...] = (
     "mec_versions",
     "transaction_decision_records",
     "merchants",
+    "merchant_stores",
+    "sync_jobs",
 )
 
 SCHEMA_SQL = """
@@ -260,6 +262,29 @@ CREATE TABLE IF NOT EXISTS merchants (
     created_at    TEXT NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_merchants_email_store ON merchants (email, store_id);
+
+CREATE TABLE IF NOT EXISTS merchant_stores (
+    merchant_id TEXT NOT NULL REFERENCES merchants(merchant_id) ON DELETE CASCADE,
+    store_id    TEXT NOT NULL,
+    platform    TEXT NOT NULL CHECK (platform IN ('shopify','woocommerce','custom')),
+    domain      TEXT,
+    url         TEXT,
+    connected_at TEXT NOT NULL,
+    PRIMARY KEY (merchant_id, store_id, platform)
+);
+
+CREATE TABLE IF NOT EXISTS sync_jobs (
+    job_id      TEXT PRIMARY KEY,
+    merchant_id TEXT,
+    store_id    TEXT NOT NULL,
+    platform    TEXT NOT NULL,
+    status      TEXT NOT NULL CHECK (status IN ('pending','running','done','failed')),
+    imported    INTEGER NOT NULL DEFAULT 0,
+    skipped     INTEGER NOT NULL DEFAULT 0,
+    error       TEXT,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
 """
 
 _local = threading.local()
