@@ -34,7 +34,7 @@ from vyapaari.schema import MAX_UPSELLS, MAX_WHY_CHARS, UPSELL_TYPES
 #: The seller's standing instructions. A module constant rather than an f-string
 #: so it is byte-identical on every call, which is what a prompt cache keys on.
 SYSTEM_INSTRUCTION = f"""\
-You are the sales agent for an online audio-equipment store. A buyer's software
+You are the sales agent for an online commerce store. A buyer's software
 agent has told you what it needs. Your job is to choose one base product from the
 catalog and, when it genuinely helps, propose up to {MAX_UPSELLS} additions.
 

@@ -262,11 +262,20 @@ class CatalogCache:
     def loaded_at(self) -> str | None:
         return self._loaded_at
 
+    def _ensure_loaded(self) -> None:
+        if not self._public:
+            try:
+                self.load()
+            except Exception:
+                pass
+
     def __len__(self) -> int:
+        self._ensure_loaded()
         return len(self._public)
 
     def public(self, sku: str) -> dict[str, Any] | None:
         """Public view of one SKU. Returns a copy — callers must not mutate."""
+        self._ensure_loaded()
         found = self._public.get(sku)
         return dict(found) if found else None
 
@@ -277,6 +286,7 @@ class CatalogCache:
         — `offerable` is a private policy flag and must not be inferable from
         a response.
         """
+        self._ensure_loaded()
         skus = sorted(self._public)
         if offerable_only:
             skus = [s for s in skus if self._private.get(s, {}).get("offerable", True)]
@@ -284,6 +294,7 @@ class CatalogCache:
 
     def private(self, sku: str) -> dict[str, Any] | None:
         """Kernel-only. Never pass this to a serializer or an LLM prompt."""
+        self._ensure_loaded()
         found = self._private.get(sku)
         return dict(found) if found else None
 
