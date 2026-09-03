@@ -327,6 +327,21 @@ def list_all(conn=None) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+def list_today(day_prefix: str, conn=None) -> list[dict[str, Any]]:
+    """Orders created on a specific UTC day — single SQL-filtered scan for dashboard metrics.
+
+    `day_prefix` is 'YYYY-MM-DD'. Uses a LIKE filter on the text created_at column
+    which is always stored as ISO-8601, so the prefix match is exact and index-friendly.
+    """
+    conn = conn or get_connection()
+    rows = conn.execute(
+        "SELECT * FROM orders WHERE created_at LIKE ? ORDER BY created_at",
+        (f"{day_prefix}%",),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+
 # ── reservations ───────────────────────────────────────────────────────────────
 #
 # A two-step checkout takes out stock holds and reserves discount budget, then

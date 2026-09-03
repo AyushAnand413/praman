@@ -429,7 +429,7 @@ def connect(path: Path | str | None = None):  # path ignored - Postgres only
             keepalives_interval=10,
             keepalives_count=3,
             connect_timeout=5,
-            options="-c statement_timeout=15000",
+            options="-c statement_timeout=10000",
         )
         raw.autocommit = False
         return _PGWrapper(raw)
