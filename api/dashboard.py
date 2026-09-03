@@ -349,21 +349,68 @@ def dashboard(
     feed, feed_has_more = _feed(limit=feed_limit, before_seq=feed_before_seq)
     pending_q = approvals_kernel.pending_queue()
 
-    # One shared ledger scan for both panels (300 rows) + 10s TTL cache
+    # Panel cache — DB-backed so it survives Vercel cold starts.
+    # Stored as a JSON blob with a timestamp. TTL = 60s.
+    # Falls back to live scan if cache missing, expired, or DB write fails.
     import time as _time
-    now = _time.monotonic()
+    import json as _json
+    now_wall = _time.time()
+    safety = None
+    bounds = None
     shared_entries = None
-    use_cache = (now - _panel_cache["ts"] < _PANEL_TTL_S) and _panel_cache["entries"] is not None
-    if use_cache:
-        shared_entries = _panel_cache["entries"]
-        safety = _panel_cache["safety"]
-        bounds = _panel_cache["bounds"]
-    else:
+
+    # Try to read from DB cache first
+    try:
+        cache_row = conn.execute(
+            "SELECT discount_spent_inr, updated_at FROM policy_budgets WHERE day = %s",
+            ("_panel_cache",),
+        ).fetchone()
+        if cache_row:
+            age = now_wall - float(cache_row["discount_spent_inr"] or 0)
+            if age < _PANEL_TTL_S:
+                # Cache hit — decode from updated_at (blob store)
+                cached = conn.execute(
+                    "SELECT updated_at FROM policy_budgets WHERE day = '_panel_cache_data'",
+                ).fetchone()
+                if cached:
+                    raw = cached["updated_at"] or ""
+                    blob = _json.loads(raw.split("||", 1)[1]) if "||" in raw else None
+                    if blob:
+                        safety = blob.get("safety")
+                        bounds = blob.get("bounds")
+    except Exception:
+        pass
+
+    # Cache miss — compute panels and store in DB
+    if safety is None or bounds is None:
         shared_entries = ledger.recent(limit=SAFETY_SCAN_DEPTH, conn=conn)
         safety = _safety_panel(shared_entries)
         bounds = _bounds_panel(shared_entries)
-        _panel_cache["ts"] = now
+        # Also update process-local cache as fast path for warm requests
+        _panel_cache["ts"] = _time.monotonic()
         _panel_cache["entries"] = shared_entries
+        _panel_cache["safety"] = safety
+        _panel_cache["bounds"] = bounds
+        try:
+            blob_str = "_panel_cache_data||" + _json.dumps({"safety": safety, "bounds": bounds})
+            conn.execute(
+                """INSERT INTO policy_budgets (day, discount_spent_inr, updated_at)
+                   VALUES ('_panel_cache', ?, ?)
+                   ON CONFLICT (day) DO UPDATE SET discount_spent_inr=excluded.discount_spent_inr, updated_at=excluded.updated_at""",
+                (int(now_wall), blob_str),
+            )
+            conn.execute(
+                """INSERT INTO policy_budgets (day, discount_spent_inr, updated_at)
+                   VALUES ('_panel_cache_data', 0, ?)
+                   ON CONFLICT (day) DO UPDATE SET updated_at=excluded.updated_at""",
+                (blob_str,),
+            )
+            conn.commit()
+        except Exception:
+            pass  # Cache write failing is fine — next request recomputes
+    else:
+        # Process-local cache miss but DB hit — also warm the local cache
+        _panel_cache["ts"] = _time.monotonic()
         _panel_cache["safety"] = safety
         _panel_cache["bounds"] = bounds
 
