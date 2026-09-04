@@ -161,6 +161,60 @@ def _request_block(request: ProposalRequest) -> str:
     )
 
 
+def _select_relevant_envelope(
+    request: ProposalRequest,
+    envelope: Sequence[SellableSku],
+    limit: int = 15,
+) -> Sequence[SellableSku]:
+    """Prune the full catalog down to a compact, highly-relevant subset for the prompt.
+
+    Prevents token bloat (413 Payload Too Large) while preserving the exact base SKU,
+    all of its attach companion candidates, and relevant category options.
+    """
+    if len(envelope) <= limit:
+        return envelope
+
+    selected: list[SellableSku] = []
+    selected_skus: set[str] = set()
+
+    # 1. Base SKU if explicitly named
+    if request.base_sku:
+        for s in envelope:
+            if s.sku == request.base_sku:
+                selected.append(s)
+                selected_skus.add(s.sku)
+                # Include its companion attach candidates
+                for att in s.attach:
+                    for companion in envelope:
+                        if companion.sku == att.sku and companion.sku not in selected_skus:
+                            selected.append(companion)
+                            selected_skus.add(companion.sku)
+                break
+
+    # 2. Matching category items
+    target_category = request.category
+    if not target_category and request.base_sku and selected:
+        target_category = selected[0].category
+
+    if target_category:
+        for s in envelope:
+            if s.category == target_category and s.sku not in selected_skus and s.available_qty > 0:
+                selected.append(s)
+                selected_skus.add(s.sku)
+                if len(selected) >= limit:
+                    break
+
+    # 3. Fill remaining slots with available in-stock items
+    for s in envelope:
+        if s.sku not in selected_skus and s.available_qty > 0:
+            selected.append(s)
+            selected_skus.add(s.sku)
+            if len(selected) >= limit:
+                break
+
+    return selected
+
+
 def build(
     request: ProposalRequest,
     envelope: Sequence[SellableSku],
@@ -173,8 +227,9 @@ def build(
     field that was wrong. Telling the model what it broke is the difference
     between a retry and a coin flip.
     """
+    focused_envelope = _select_relevant_envelope(request, envelope)
     catalog_json = json.dumps(
-        envelope_module.as_prompt_payload(envelope),
+        envelope_module.as_prompt_payload(focused_envelope),
         sort_keys=True,
         separators=(",", ":"),
     )

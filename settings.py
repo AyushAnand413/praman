@@ -421,6 +421,7 @@ CLUSTER_PRIOR_MIN_OWN_SAMPLES = 5
 # here rather than beside GEMINI_API_KEY so it can be logged and put in a ledger
 # entry, which is how a later audit tells which model produced an offer.
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
 
 # Wall-clock ceiling on one model call. Deliberately below the offer latency
 # budget above, because the offer path may make two calls (the original and the

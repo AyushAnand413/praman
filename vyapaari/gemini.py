@@ -25,6 +25,7 @@ a number nothing in the system reasons about.
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any
 
@@ -178,3 +179,75 @@ class GeminiClient:
 
         text = getattr(response, "text", None)
         return text or ""
+
+
+def is_groq_configured() -> bool:
+    """Whether Groq API key is present in environment."""
+    return bool(os.environ.get("GROQ_API_KEY"))
+
+
+class GroqClient:
+    """High-speed LLM client powered by Groq."""
+
+    def __init__(
+        self,
+        *,
+        model: str | None = None,
+        api_key: str | None = None,
+        timeout_seconds: float = 15.0,
+        temperature: float = 0.3,
+    ) -> None:
+        self.model = model or getattr(settings, "GROQ_MODEL", "openai/gpt-oss-120b")
+        self.timeout_seconds = timeout_seconds
+        self.temperature = temperature
+        self._api_key = api_key or os.environ.get("GROQ_API_KEY")
+        self._client: Any = None
+
+    def __repr__(self) -> str:
+        return f"<GroqClient model={self.model!r}>"
+
+    def _ensure_client(self) -> Any:
+        if self._client is not None:
+            return self._client
+        if not self._api_key:
+            raise LLMUnavailable(
+                "GROQ_API_KEY is not set in environment."
+            )
+        try:
+            from groq import Groq
+        except ImportError as exc:
+            raise LLMUnavailable(
+                "groq package is not installed."
+            ) from exc
+
+        self._client = Groq(api_key=self._api_key, timeout=self.timeout_seconds)
+        return self._client
+
+    def generate(
+        self, *, system: str, user: str, response_schema: dict[str, Any]
+    ) -> str:
+        """Execute one model completion call returning raw JSON text."""
+        client = self._ensure_client()
+        schema_instruction = (
+            f"\n\nCRITICAL: You MUST reply with ONLY a single valid JSON object strictly matching this schema:\n"
+            f"{json.dumps(response_schema)}\n"
+            f"Do not wrap in markdown quotes. Do not include any explanations."
+        )
+        full_system = system + schema_instruction
+
+        try:
+            chat = client.chat.completions.create(
+                messages=[
+                    {"role": "system", "content": full_system},
+                    {"role": "user", "content": user},
+                ],
+                model=self.model,
+                response_format={"type": "json_object"},
+                temperature=self.temperature,
+            )
+            return chat.choices[0].message.content or ""
+        except Exception as exc:
+            raise LLMUnavailable(
+                f"Groq API call failed ({type(exc).__name__}): {exc}"
+            ) from exc
+
