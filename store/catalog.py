@@ -153,6 +153,7 @@ def seed_database_from_rows(
     private_rows: list[dict[str, Any]],
     *,
     conn: sqlite3.Connection | None = None,
+    seed_priors: bool = False,
 ) -> int:
     """Upsert catalog rows from dicts — the connector path.
 
@@ -219,6 +220,21 @@ def seed_database_from_rows(
                 },
             )
     cache.load(conn)
+    if seed_priors:
+        from store import pairings as pairings_store
+        pairs_to_seed = []
+        for row in private_rows:
+            base_sku = row.get("sku")
+            if not base_sku:
+                continue
+            for candidate in (row.get("attach_candidates") or []):
+                paired = candidate.get("sku") if isinstance(candidate, dict) else candidate
+                if paired:
+                    pairs_to_seed.append((str(base_sku), str(paired)))
+            tier_up = row.get("tier_up_sku")
+            if tier_up:
+                pairs_to_seed.append((str(base_sku), str(tier_up)))
+        pairings_store.seed_pairings_batch(pairs_to_seed, conn=conn)
     return len(public_rows)
 
 
@@ -297,6 +313,16 @@ class CatalogCache:
         self._ensure_loaded()
         found = self._private.get(sku)
         return dict(found) if found else None
+
+    def all_private(self) -> list[dict[str, Any]]:
+        """Kernel-only. Return all private records."""
+        self._ensure_loaded()
+        return [dict(self._private[s]) for s in sorted(self._private)]
+
+    def all_private_by_sku(self) -> dict[str, dict[str, Any]]:
+        """Kernel-only. Return all private records keyed by SKU."""
+        self._ensure_loaded()
+        return {s: dict(self._private[s]) for s in self._private}
 
     def set_offerable(
         self, sku: str, offerable: bool, conn: sqlite3.Connection | None = None

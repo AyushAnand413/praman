@@ -27,7 +27,7 @@ from settings import (
     POLICY_MODE,
     SECRET_ENV_VARS,
 )
-from api import agent, approvals, audit, auth, dashboard, demo, manifest, ops, orders, policy, stores, webhooks
+from api import agent, approvals, audit, auth, dashboard, demo, manifest, ops, orders, policy, recommendations, stores, webhooks
 from api import mcp as mcp_module
 from kernel import checkout as checkout_kernel
 from mandate.issuers import DEMO_ISSUER_ID, bootstrap_demo_issuer
@@ -125,6 +125,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         jm = journal_mode(get_connection()) if db_ready else "deferred"
     except Exception:
         jm = "deferred"
+    if db_ready:
+        try:
+            from kernel.recommender import seed_pairings_from_catalog
+            n_seeded = seed_pairings_from_catalog()
+            log.info("recommender | cold-start seeded %d pairs", n_seeded)
+        except Exception as exc:
+            log.warning("recommender | could not seed pairings: %s", exc)
+
     log.info(
         "ready | POLICY_MODE=%s | %d SKUs cached | journal_mode=%s | db_ready=%s",
         POLICY_MODE.value, len(catalog.cache), jm, db_ready,
@@ -186,6 +194,7 @@ def create_app() -> FastAPI:
     app.include_router(orders.router)
     app.include_router(stores.router)
     app.include_router(policy.router)
+    app.include_router(recommendations.router)
 
     # The merchant panel: a static single-page console served by this same
     # process, so a demo is "open the browser" and nothing else. It speaks to
