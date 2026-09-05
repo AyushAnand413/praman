@@ -60,6 +60,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+import logging
 from typing import Any, Callable
 
 import httpx
@@ -78,6 +79,8 @@ from mandate import verifier
 from store import approvals as approvals_store
 from store import catalog, ids, ledger, offers, orders, pairings, tenancy
 from store.timestamps import parse, plus_seconds, utc_now
+
+log = logging.getLogger("praman.checkout")
 
 #: What the buyer agent is told. These strings are part of the agent-facing
 #: contract, so they are constants rather than inline literals.
@@ -800,13 +803,14 @@ def _proceed_to_payment(
                 link = client.create_payment_link(
                     amount_inr,
                     reference_id=order_id,
-                    order_id=gateway_order["id"],
                     description=f"Aether Audio order {order_id} — ₹{amount_inr}",
                     notes={"order_id": order_id, "offer_id": offer["offer_id"]},
                 )
                 payment_url = link.get("short_url")
-            except Exception:
-                pass
+            except Exception as exc:
+                # Never blocks checkout — but never silent either: without this
+                # log line a rejected payment-link call is invisible in prod logs.
+                log.warning("payment link creation failed for %s: %r", order_id, exc)
         # The buyer completes Checkout, then `settle` captures. The order stays
         # PENDING: nothing has been authorised yet, and the hold keeps the stock
         # for the length of its TTL. The reservation recorded above is what lets
