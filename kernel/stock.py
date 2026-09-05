@@ -108,9 +108,39 @@ def available_for(
     conn: sqlite3.Connection | None = None,
 ) -> dict[str, int]:
     """Availability for several SKUs, as the mapping the bound checks expect."""
+    sku_set = set(skus)
+    if not sku_set:
+        return {}
     conn = conn or get_connection()
     moment = now or utc_now()
-    return {sku: available_qty(sku, now=moment, conn=conn) for sku in set(skus)}
+
+    # 1. Read on_hand from catalog cache if available, falling back to DB for missing
+    from store import catalog
+    on_hand_map: dict[str, int] = {}
+    for s in sku_set:
+        pub = catalog.cache.public(s)
+        if pub and "stock_qty" in pub:
+            on_hand_map[s] = int(pub["stock_qty"])
+
+    missing = sku_set - set(on_hand_map)
+    if missing:
+        placeholders = ",".join(["?"] * len(missing))
+        rows = conn.execute(f"SELECT sku, stock_qty FROM products WHERE sku IN ({placeholders})", tuple(missing)).fetchall()
+        for r in rows:
+            on_hand_map[r["sku"]] = int(r["stock_qty"])
+
+    # 2. Batch query all live holds for the requested SKUs in ONE single round trip
+    placeholders = ",".join(["?"] * len(sku_set))
+    held_rows = conn.execute(
+        f"""SELECT sku, COALESCE(SUM(qty), 0) AS held
+              FROM stock_holds
+             WHERE sku IN ({placeholders}) AND {_LIVE_HOLD_CLAUSE}
+             GROUP BY sku""",
+        (*sku_set, to_ts(moment)),
+    ).fetchall()
+    held_map = {r["sku"]: int(r["held"]) for r in held_rows}
+
+    return {sku: max(0, on_hand_map.get(sku, 0) - held_map.get(sku, 0)) for sku in sku_set}
 
 
 def _insert_hold(

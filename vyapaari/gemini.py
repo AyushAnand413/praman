@@ -197,7 +197,7 @@ class GroqClient:
         timeout_seconds: float = 15.0,
         temperature: float = 0.3,
     ) -> None:
-        self.model = model or getattr(settings, "GROQ_MODEL", "openai/gpt-oss-120b")
+        self.model = model or getattr(settings, "GROQ_MODEL", "openai/gpt-oss-20b")
         self.timeout_seconds = timeout_seconds
         self.temperature = temperature
         self._api_key = api_key or os.environ.get("GROQ_API_KEY")
@@ -250,4 +250,121 @@ class GroqClient:
             raise LLMUnavailable(
                 f"Groq API call failed ({type(exc).__name__}): {exc}"
             ) from exc
+
+
+def get_openrouter_api_keys() -> list[str]:
+    """Return all configured OpenRouter API keys for turn-by-turn rotation."""
+    keys: list[str] = []
+    # Comma-separated list
+    raw = os.environ.get("OPENROUTER_API_KEYS", "")
+    if raw:
+        for k in raw.split(","):
+            k = k.strip()
+            if k and k not in keys:
+                keys.append(k)
+    # Numbered environment variables (OPENROUTER_API_KEY_1 .. 10)
+    for i in range(1, 11):
+        val = os.environ.get(f"OPENROUTER_API_KEY_{i}", "").strip()
+        if val and val not in keys:
+            keys.append(val)
+    val = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    if val and val not in keys:
+        keys.append(val)
+    return keys
+
+
+def is_openrouter_configured() -> bool:
+    """Whether at least one OpenRouter API key is present in environment."""
+    return len(get_openrouter_api_keys()) > 0
+
+
+class OpenRouterClient:
+    """High-speed LLM client with turn-by-turn multi-key rotation and 429 failover."""
+
+    _rotation_index: int = 0
+
+    def __init__(
+        self,
+        *,
+        model: str | None = None,
+        api_keys: list[str] | None = None,
+        timeout_seconds: float = 30.0,
+        temperature: float = 0.3,
+    ) -> None:
+        self.model = model or getattr(settings, "OPENROUTER_MODEL", "dots-studio/dots-3-note-preview:free")
+        self.timeout_seconds = timeout_seconds
+        self.temperature = temperature
+        self._api_keys = api_keys or get_openrouter_api_keys()
+
+    def __repr__(self) -> str:
+        return f"<OpenRouterClient model={self.model!r} keys={len(self._api_keys)}>"
+
+    def generate(
+        self, *, system: str, user: str, response_schema: dict[str, Any]
+    ) -> str:
+        """Execute one completion call rotating across keys turn-by-turn with 429 failover."""
+        if not self._api_keys:
+            raise LLMUnavailable("No OPENROUTER_API_KEY configured in environment.")
+
+        import requests
+
+        schema_instruction = (
+            f"\n\nCRITICAL: You MUST reply with ONLY a single valid JSON object strictly matching this schema:\n"
+            f"{json.dumps(response_schema)}\n"
+            f"Do not wrap in markdown quotes. Do not include any explanations."
+        )
+        full_system = system + schema_instruction
+
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": full_system},
+                {"role": "user", "content": user},
+            ],
+            "response_format": {"type": "json_object"},
+            "temperature": self.temperature,
+        }
+
+        # Select primary key turn-by-turn via round-robin rotation
+        start_idx = OpenRouterClient._rotation_index % len(self._api_keys)
+        OpenRouterClient._rotation_index += 1
+
+        ordered_keys = [
+            self._api_keys[(start_idx + offset) % len(self._api_keys)]
+            for offset in range(len(self._api_keys))
+        ]
+
+        last_error: Exception | None = None
+        for key_num, active_key in enumerate(ordered_keys, 1):
+            headers = {
+                "Authorization": f"Bearer {active_key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://github.com/AyushAnand413/praman",
+                "X-Title": "Praman Policy Kernel",
+            }
+            try:
+                resp = requests.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers=headers,
+                    json=payload,
+                    timeout=self.timeout_seconds,
+                )
+                if resp.status_code == 429:
+                    # Rate limited on this key: immediately failover to next rotated key in pool
+                    last_error = LLMUnavailable(f"OpenRouter key #{key_num} rate limited (429)")
+                    continue
+                if resp.status_code != 200:
+                    last_error = LLMUnavailable(f"OpenRouter key #{key_num} returned HTTP {resp.status_code}: {resp.text}")
+                    continue
+
+                data = resp.json()
+                content = data["choices"][0]["message"]["content"]
+                return content or ""
+            except Exception as exc:
+                last_error = LLMUnavailable(f"OpenRouter call failed ({type(exc).__name__}): {exc}")
+                continue
+
+        raise LLMUnavailable(f"All {len(self._api_keys)} OpenRouter keys failed or rate-limited. Last error: {last_error}")
+
+
 

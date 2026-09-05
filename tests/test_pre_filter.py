@@ -11,7 +11,7 @@ def create_mock_policy():
             min_margin_pct=Decimal("10"),
             max_discount_pct_per_sku=20,
             max_cart_discount_pct=15,
-            max_txn_without_human_inr=10000
+            max_txn_without_human_inr=6000
         ),
         economic_objectives=EconomicObjectives(
             margin_weight=Decimal("0.25"),
