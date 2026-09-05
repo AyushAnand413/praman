@@ -1,10 +1,14 @@
 # PRAMAN — Merchant Control Plane for Agentic Commerce
 
-PRAMAN sits between an AI buyer and the payment rail. The AI proposes a deal, PRAMAN decides if it is allowed, and Razorpay moves the money.
+![Python](https://img.shields.io/badge/Python-3.11+-blue?logo=python) ![Next.js](https://img.shields.io/badge/Next.js-Dashboard-black?logo=next.js) ![MCP](https://img.shields.io/badge/MCP-Compatible-purple) ![Razorpay](https://img.shields.io/badge/Payments-Razorpay-blue)
 
 > **AI proposes. PRAMAN decides. Razorpay executes.**
 
+PRAMAN sits between an AI buyer and the payment rail. The AI proposes a deal, PRAMAN decides if it is allowed, and Razorpay moves the money.
+
 Shoppers use their own AI (ChatGPT, Claude, any MCP client). Merchants use PRAMAN's dashboard. The shopper never signs up — the bundle offer they see came from PRAMAN.
+
+---
 
 ## Why it exists
 
@@ -12,8 +16,13 @@ AI buyers skip every visual upsell (bundles, cross-sell, warranty bumps, volume 
 
 ## How it differs
 
-- **vs Razorpay:** Razorpay is the rail (orders, payments, refunds, webhooks). PRAMAN is the decider above it (margins, floors, budgets, stock, approvals, receipts, ledger). Complement, not competitor: `ChatGPT → Razorpay` is the baseline, `ChatGPT → PRAMAN → Razorpay` adds merchant economics and proof.
-- **vs ChatGPT:** ChatGPT serves the buyer and will happily propose 90% off. PRAMAN serves the merchant: it rejects bad proposals with a named bound, counters with the best allowed deal, and signs the reason before money moves.
+| | PRAMAN | Razorpay | ChatGPT |
+|---|---|---|---|
+| **Role** | Merchant control plane (decider) | Payment rail (executor) | Buyer agent (proposer) |
+| **Authority** | Enforces margins, floors, budgets, stock | Moves money on instruction | Proposes deals for the buyer |
+| **Baseline vs PRAMAN** | `ChatGPT → PRAMAN → Razorpay` | `ChatGPT → Razorpay` (no merchant economics) | Happily proposes 90% off |
+
+---
 
 ## How it works
 
@@ -22,16 +31,20 @@ Buyer intent → Vyapaari (LLM proposes) → Policy + Kernel (decides, can veto)
   → Reservation + re-check → Razorpay → Ledger + Receipt
 ```
 
-- `vyapaari/` proposes only. No credentials, no DB writes, no payment imports.
-- `kernel/` decides: 10 bounds, 3 gate tiers, 11-step checkout. `kernel/payments.py` is the only module that touches Razorpay keys.
-- `policy/` holds merchant economics (MEC hierarchy, optimizer, negotiation) and the 8 immutable safety invariants.
-- `store/` records everything: Postgres tables, catalog cache, append-only hash-chained ledger.
-- `mandate/` verifies buyer authority (Ed25519 scope + budget + expiry).
+| Module | Role |
+|---|---|
+| `vyapaari/` | Proposes only — no credentials, no DB writes, no payment imports |
+| `kernel/` | Decides: 10 bounds, 3 gate tiers, 11-step checkout. Only module touching Razorpay keys |
+| `policy/` | Merchant economics (MEC hierarchy, optimizer, negotiation) + 8 immutable safety invariants |
+| `store/` | Postgres tables, catalog cache, append-only hash-chained ledger |
+| `mandate/` | Verifies buyer authority (Ed25519 scope + budget + expiry) |
 
-Two engines worth knowing:
+### Two engines worth knowing
 
-- **Negotiation** (`policy/negotiation.py`, `kernel/approvals.py`, `harness/grahak.py`): rejects below-floor bids, counters at floor or reduced qty (max 3 rounds), or returns `NO_FEASIBLE_DEAL`. Tier-2 orders support merchant approve / reject / counter.
-- **Recommendations** (`store/pairings.py`, `kernel/recommender.py`, `api/recommendations.py`): learns what sells together from every sale (confidence + lift, 45-day half-life decay), seeds new stores with declared companions + category priors, filters by live stock and budget. Bound 10 (`relatedness_required`) blocks nonsense combos in the kernel.
+- **Negotiation** (`policy/negotiation.py`, `kernel/approvals.py`, `harness/grahak.py`) — rejects below-floor bids, counters at floor or reduced qty (max 3 rounds), or returns `NO_FEASIBLE_DEAL`. Tier-2 orders support merchant approve / reject / counter.
+- **Recommendations** (`store/pairings.py`, `kernel/recommender.py`, `api/recommendations.py`) — learns what sells together from every sale (confidence + lift, 45-day half-life decay), seeds new stores with declared companions + category priors, filters by live stock and budget. Bound 10 (`relatedness_required`) blocks nonsense combos in the kernel.
+
+---
 
 ## Repo map
 
@@ -50,6 +63,8 @@ Two engines worth knowing:
 | `eval/` | 8-metric eval harness → scorecard |
 | `tests/` | Hermetic suite (live Razorpay tests opt-in only) |
 
+---
+
 ## Quick start
 
 ```bash
@@ -63,6 +78,8 @@ python -m pytest                          # hermetic; --live-api opts into real 
 ## Routes
 
 `/.well-known/agent-commerce.json` · `/health` · `/agent/v1/{catalog,offer,checkout,order/*,recommendations/*}` · `/merchant/v1/{dashboard,approvals,orders,policy,stores}` · `/merchant/v1/shopify/sync` · `/audit/{verify,trail}` · `/webhooks/razorpay` · `/mcp` · `/panel` · `/demo/force_oversell`
+
+---
 
 ## Shop with MCP (Claude Desktop / any MCP client)
 
@@ -82,6 +99,8 @@ Same store, same rules as HTTP — the tools call the same handlers, so validati
 }
 ```
 
+---
+
 ## Connect Shopify (real catalog in, orders out)
 
 Three steps. Products flow Shopify → PRAMAN; completed sales and saga refunds push back so you fulfil in the Shopify admin you already use.
@@ -95,7 +114,6 @@ curl -X POST http://localhost:8000/merchant/v1/stores/connect/shopify \
   -H "Authorization: Bearer <token>" -H "X-Store-Id: default" \
   -H "Content-Type: application/json" \
   -d '{"domain":"my-store.myshopify.com","token":"shpat_…"}'
-# → 202 {"status":"accepted","job_id":"SYNC-…","poll_url":"/merchant/v1/stores/sync/SYNC-…"}
 ```
 
 **3. Poll the job until done:**
@@ -108,7 +126,9 @@ curl http://localhost:8000/merchant/v1/stores/sync/SYNC-… \
 
 Alternative (server-side): set `SHOPIFY_STORE_DOMAIN` + `SHOPIFY_ADMIN_ACCESS_TOKEN` in `.env`, then `POST /merchant/v1/shopify/sync` with the Bearer token.
 
-Honest limits: single-variant products only (first variant is imported); unit cost isn't in Shopify's payload so it's derived at `SHOPIFY_ASSUMED_MARGIN_PCT` (default 40%) and labelled as an assumption in the private row — correct it in the dashboard. Big catalogs sync page-by-page with progress saved per page; if the 25s window cuts off, just sync again. Every sync is written to the ledger.
+> **Limits:** Single-variant products only (first variant imported). Unit cost is derived at `SHOPIFY_ASSUMED_MARGIN_PCT` (default 40%) — correct it in the dashboard. Big catalogs sync page-by-page; if the 25s window cuts off, just sync again. Every sync is written to the ledger.
+
+---
 
 ## Rules that never move
 
@@ -118,4 +138,6 @@ Honest limits: single-variant products only (first variant is imported); unit co
 - Ledger is append-only; corrections are new compensating entries
 - Private catalog fields never leave the server (`store/catalog.py:to_public()` whitelist)
 
-Full architecture: `praman_arch.md`. Spec history: `plan.md`, `PRAMAN_2.0_Architecture.md`.
+---
+
+Full architecture: [`praman_arch.md`](praman_arch.md)
