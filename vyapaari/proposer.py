@@ -36,9 +36,11 @@ from vyapaari.envelope import SellableSku
 from vyapaari.gemini import (
     GeminiClient,
     GroqClient,
+    OpenRouterClient,
     LLMUnavailable,
     is_configured,
     is_groq_configured,
+    is_openrouter_configured,
 )
 from vyapaari.prompt import ProposalRequest
 from vyapaari.schema import RESPONSE_SCHEMA, Proposal, ProposedItem, SchemaError, parse
@@ -171,14 +173,16 @@ def _fallback_proposal(
 
 
 def _default_generator() -> tuple[Generator | None, str | None, str | None]:
-    """The live client, or a reason there isn't one."""
-    if is_groq_configured():
-        client = GroqClient()
-        return client.generate, client.model, None
-    if is_configured():
-        client = GeminiClient()
-        return client.generate, client.model, None
-    return None, None, "llm_not_configured"
+    """The live client using turn-by-turn multi-key OpenRouter rotation only."""
+    if is_openrouter_configured():
+        client = OpenRouterClient()
+        num_keys = len(client._api_keys)
+        model_desc = f"{client.model} ({num_keys} rotating key{'s' if num_keys > 1 else ''})"
+        return client.generate, model_desc, None
+
+    return None, None, "openrouter_not_configured"
+
+
 
 
 # ---------------------------------------------------------------------------

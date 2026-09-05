@@ -99,7 +99,10 @@ def pre_filter(
                 
             # 4. Price >= floor
             cost = Decimal(product_economics[item.sku]["cost_inr"])
-            if margin_factor <= Decimal(0):
+            explicit_floor = product_economics[item.sku].get("floor_price_inr")
+            if explicit_floor is not None:
+                floor_price = Decimal(explicit_floor)
+            elif margin_factor <= Decimal(0):
                 floor_price = Decimal(0)
             else:
                 floor_price = cost / margin_factor
