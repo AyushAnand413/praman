@@ -314,7 +314,7 @@ def verify(
     # ── 3. signature ─────────────────────────────────────────────────────────
     try:
         verify_key.verify(signed_bytes, signature)
-    except BadSignatureError:
+    except (BadSignatureError, ValueError):
         return _reject(
             BAD_SIGNATURE,
             f"signature does not verify against the registered key for issuer "

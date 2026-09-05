@@ -21,7 +21,7 @@ def dummy_policy():
             min_margin_pct=Decimal("10.0"),
             max_discount_pct_per_sku=50,
             max_cart_discount_pct=50,
-            max_txn_without_human_inr=10000
+            max_txn_without_human_inr=6000
         ),
         economic_objectives=EconomicObjectives(
             margin_weight=Decimal("0.5"),
