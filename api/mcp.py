@@ -47,6 +47,9 @@ price with `get_offer`, which returns one or two options, each with its own tota
 and a `gate_tier` saying what buying it will require: tier 0 needs nothing, tier 1
 needs a signed mandate, tier 2 needs a human to approve it. Buy with `buy`, which
 needs the offer id and the option id (idempotency is auto-handled if you omit it).
+`buy` returns a `razorpay` block containing `payment_url` — a hosted link where the
+shopper completes payment. Always present that URL as a clickable link and tell the
+shopper the order is awaiting their payment there.
 Poll with `check_order`.
 
 Be warm and concise when you talk to the shopper — short bullet points, price in
@@ -189,7 +192,9 @@ def build_server() -> FastMCP:
             "the same key cannot charge twice. Above the mandate threshold a signed "
             "mandate token is required; above the human threshold the order is held "
             "for merchant approval and you poll it with check_order. You do not send "
-            "an amount: the price comes from the stored offer."
+            "an amount: the price comes from the stored offer. The result carries a "
+            "razorpay.payment_url — present it as the clickable link where the shopper "
+            "pays, and say the order awaits their payment there."
         ),
     )
     async def buy(

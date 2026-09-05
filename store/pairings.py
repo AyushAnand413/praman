@@ -209,6 +209,12 @@ def pairs_for(
     )
     samples = int(round(denominator))
 
+    total_orders_row = conn.execute(
+        "SELECT SUM(base_count) as total FROM pairing_denominators WHERE store_id=?",
+        (store_id,),
+    ).fetchone()
+    total_orders = float(total_orders_row["total"] or 0.0) if total_orders_row else 0.0
+
     results: list[dict[str, Any]] = []
     seen: set[str] = set()
     for row in conn.execute(
@@ -220,16 +226,24 @@ def pairs_for(
             last_updated=parse(row["updated_at"]), now=moment
         )
         strength = min(1.0, together / denominator) if denominator > 0 else 0.0
+
+        comp_denom = _decayed_denominator(
+            conn, store_id=store_id, base_sku=str(row["paired_sku"]), now=moment
+        )
+        p_companion = (comp_denom / total_orders) if total_orders > 0 else 0.0
+        lift = (strength / p_companion) if p_companion > 0 else 1.0
+
         results.append(
             {
                 "sku": row["paired_sku"],
                 "strength": round(strength, 4),
+                "lift": round(lift, 4),
                 "samples": samples,
                 "source": OBSERVED,
             }
         )
         seen.add(row["paired_sku"])
-    results.sort(key=lambda r: (-r["strength"], r["sku"]))
+    results.sort(key=lambda r: (-r["strength"], -r.get("lift", 1.0), r["sku"]))
 
     for row in conn.execute(
         """SELECT paired_sku FROM pairings
@@ -241,6 +255,7 @@ def pairs_for(
                 {
                     "sku": row["paired_sku"],
                     "strength": 0.0,
+                    "lift": 1.0,
                     "samples": 0,
                     "source": SEEDED,
                 }
@@ -321,6 +336,32 @@ def seed_pairing(
                DO NOTHING""",
             (store_id, str(base_sku), str(paired_sku), SEEDED, to_ts(utc_now())),
         )
+
+
+def seed_pairings_batch(
+    pairs: Sequence[tuple[str, str]],
+    *,
+    store_id: str | None = None,
+    conn: sqlite3.Connection | None = None,
+) -> int:
+    """Seed multiple pairings in a single transaction."""
+    if not pairs:
+        return 0
+    conn = conn or get_connection()
+    store_id = _resolve_store(store_id)
+    now_ts = to_ts(utc_now())
+    with transaction(conn):
+        for base_sku, paired_sku in pairs:
+            conn.execute(
+                """INSERT INTO pairings
+                       (store_id, base_sku, paired_sku, source,
+                        together_count, updated_at)
+                   VALUES (?, ?, ?, ?, 0, ?)
+                   ON CONFLICT (store_id, base_sku, paired_sku, source)
+                   DO NOTHING""",
+                (store_id, str(base_sku), str(paired_sku), SEEDED, now_ts),
+            )
+    return len(pairs)
 
 
 def snapshot(

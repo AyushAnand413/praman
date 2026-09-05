@@ -228,7 +228,7 @@ CAPABILITIES = (
     "checkout.intent",
     "order.status",
 )
-MANDATE_REQUIRED_ABOVE_INR = 2_000
+MANDATE_REQUIRED_ABOVE_INR = 2_400
 MANDATE_AUTH_SCHEME = "ed25519-signed-jwt"
 DEFAULT_RETURNS_WINDOW_DAYS = 7
 
@@ -323,6 +323,8 @@ SECRET_ENV_VARS = (
     "POLICY_RECEIPT_HMAC_SECRET",
     "MANDATE_SIGNING_SEED",
     "GEMINI_API_KEY",
+    "GROQ_API_KEY",
+    "OPENROUTER_API_KEY",
     "DEMO_KEY",
     "SHOPIFY_ADMIN_ACCESS_TOKEN",
 )
@@ -421,6 +423,8 @@ CLUSTER_PRIOR_MIN_OWN_SAMPLES = 5
 # here rather than beside GEMINI_API_KEY so it can be logged and put in a ledger
 # entry, which is how a later audit tells which model produced an offer.
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-20b")
+OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "dots-studio/dots-3-note-preview:free")
 
 # Wall-clock ceiling on one model call. Deliberately below the offer latency
 # budget above, because the offer path may make two calls (the original and the

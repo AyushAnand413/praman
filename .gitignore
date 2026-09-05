@@ -82,6 +82,7 @@ temp/
 
 # Live QA — local only, never commit
 VERCEL_LIVE_QA.md
+PROD_RECOMMENDATION_ROOTCAUSE.md
 PRAMAN_AGGRESSIVE_TEST_REPORT.md
 PRAMAN_POST_FIX_VERIFICATION_REPORT.md
 LAYMAN_PROMPT_TO_FIND_ISSUE.md
@@ -90,3 +91,13 @@ AUDIT_REPORT.md
 .playwright-mcp/
 tmp_reports/
 *.report.md
+
+# Playwright & screenshot capture scripts and artifacts (never commit)
+playwright-report/
+test-results/
+scripts/capture_*.py
+scripts/preview_*.py
+scripts/*screenshot*
+*.png
+*.jpg
+*.jpeg

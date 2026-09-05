@@ -847,8 +847,40 @@ def build_offer(
     )
 
     by_sku = envelope_module.by_sku(envelope)
+
+    from kernel.recommender import recommend_upsells
+    from vyapaari.schema import Proposal
+
+    candidates = list(outcome.candidates)
+    for idx, cand in enumerate(candidates):
+        valid_upsells = [u for u in cand.upsells if u.sku in by_sku and by_sku[u.sku].in_stock]
+        if not valid_upsells:
+            algo_upsells = recommend_upsells(
+                cand.base.sku,
+                by_sku,
+                base_qty=cand.base.qty,
+                budget_inr=budget_inr,
+                conn=conn,
+            )
+            if algo_upsells:
+                candidates[idx] = Proposal(
+                    base=cand.base,
+                    upsells=tuple(algo_upsells),
+                )
+                ledger.append(
+                    "vyapaari",
+                    "upsells.augmented",
+                    {
+                        "offer_id": offer_id,
+                        "base_sku": cand.base.sku,
+                        "upsells": [u.sku for u in algo_upsells],
+                        "source": "pairings_lift",
+                    },
+                    conn=conn,
+                )
+
     candidate_deals = []
-    for idx, cand in enumerate(outcome.candidates):
+    for idx, cand in enumerate(candidates):
         candidate_deals.append(_to_candidate_deal(cand, by_sku, cand_id=str(idx)))
 
     product_context = _build_product_context(private_by_sku, available_by_sku)
@@ -882,7 +914,7 @@ def build_offer(
 
     ranked = optimize(filter_result.valid, effective_policy, product_context, buyer_budget_inr=budget_inr)
     best_candidate_id = ranked[0].candidate.candidate_id
-    best_candidate = outcome.candidates[int(best_candidate_id)]
+    best_candidate = candidates[int(best_candidate_id)]
 
     ledger.append(
         "policy_kernel",
