@@ -285,14 +285,6 @@ Adoption posture, all built and merchant-switched: stage 1 Discovery (shadow, �
 
 ---
 
-## 9. Current status — shipped versus open
-
-Live today: the full buyer path (discovery, catalog, offer, checkout, order poll, MCP tools), the 10-bound / 3-tier kernel with shadow mode, signed receipts with exploration trails, the hash-chained ledger with verify + anchors, the learning table with the algorithmic recommender and relatedness bound, the bounded tool-calling proposer with kill-switch, price negotiation plus merchant counter flow, Shopify import/order/refund code with per-store isolation plumbing, the merchant console with safety panel, the A/B and eval harnesses. The default test suite runs hermetically (no network, no keys); Razorpay-hitting tests are opt-in.
-
-Still open: the live dev-store demo against a real Shopify account, the batch trend-seeder for brand-new large catalogs (only the single-seed mechanism ships), production deploy plus repeated full demo rehearsals, and a backlog of hardening items — completing per-store isolation on every table, syncing the catalog cache with stock commits plus lazy load on cold start, fixing the Woo/Custom connector crash, deriving MCP auto-idempotency keys deterministically, wiring dashboard policy edits through to kernel enforcement, moving the dashboard cache out of the budget table, and closing the concurrent session-quota race.
-
----
-
 ## 10. Rules that never move
 
 - The LLM never holds credentials, never writes to the database, never reaches the payment module by any import path.
